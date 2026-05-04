@@ -123,6 +123,44 @@ const mockRedeemCodes: Record<string, number> = {
   STORM1000: 1000,
 }
 
+function getAssetExtension(url: string, fallback: string) {
+  const pathname = new URL(url, window.location.href).pathname
+  const extension = pathname.split(".").pop()?.toLowerCase()
+
+  return extension && extension.length <= 5 ? extension : fallback
+}
+
+function downloadAsset(url: string, filename: string) {
+  const link = document.createElement("a")
+  link.href = url
+  link.download = filename
+  link.rel = "noreferrer"
+  link.target = "_blank"
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+}
+
+function openAsset(url: string) {
+  window.open(url, "_blank", "noopener,noreferrer")
+}
+
+async function copyText(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+
+  const textarea = document.createElement("textarea")
+  textarea.value = text
+  textarea.style.position = "fixed"
+  textarea.style.opacity = "0"
+  document.body.appendChild(textarea)
+  textarea.select()
+  document.execCommand("copy")
+  textarea.remove()
+}
+
 async function pollTask({
   intervalMs = 2500,
   maxAttempts = 80,
@@ -355,6 +393,7 @@ export function ChatArea({
             <HistoryWorkspace
               items={[...projects, ...seedHistoryItems]}
               onDeleteProject={onProjectDelete}
+              onSectionChange={onSectionChange}
             />
           )}
           {activeSection === "credits" && (
@@ -720,9 +759,11 @@ type HistoryFilter = "全部" | ProjectType
 function HistoryWorkspace({
   items,
   onDeleteProject,
+  onSectionChange,
 }: {
   items: ProjectItem[]
   onDeleteProject: (id: string) => void
+  onSectionChange: (section: WorkspaceSection) => void
 }) {
   const [filter, setFilter] = useState<HistoryFilter>("全部")
   const [selectedId, setSelectedId] = useState(items[0]?.id ?? "")
@@ -804,7 +845,7 @@ function HistoryWorkspace({
         </div>
       </div>
 
-      <HistoryDetailPanel item={selectedItem} onDelete={handleDelete} />
+      <HistoryDetailPanel item={selectedItem} onDelete={handleDelete} onSectionChange={onSectionChange} />
     </section>
   )
 }
@@ -851,9 +892,11 @@ function StatusBadge({ status }: { status: ProjectStatus }) {
 function HistoryDetailPanel({
   item,
   onDelete,
+  onSectionChange,
 }: {
   item: ProjectItem | null
   onDelete: (id: string) => void
+  onSectionChange: (section: WorkspaceSection) => void
 }) {
   if (!item) {
     return (
@@ -864,6 +907,16 @@ function HistoryDetailPanel({
         </div>
       </div>
     )
+  }
+
+  const canUseResult = Boolean(item.previewUrl)
+  const prompt = item.prompt ?? ""
+  const handleDownload = () => {
+    if (!item.previewUrl) return
+
+    const fallback = item.type === "视频" ? "mp4" : "png"
+    const extension = getAssetExtension(item.previewUrl, fallback)
+    downloadAsset(item.previewUrl, `${item.type === "视频" ? "video" : "image"}-${item.id}.${extension}`)
   }
 
   return (
@@ -912,19 +965,19 @@ function HistoryDetailPanel({
       </div>
 
       <div className="mt-5 grid gap-2 sm:grid-cols-2">
-        <Button variant="outline">
+        <Button disabled={!canUseResult} onClick={() => item.previewUrl && openAsset(item.previewUrl)} variant="outline">
           <Eye className="h-4 w-4" />
           查看结果
         </Button>
-        <Button variant="outline">
+        <Button disabled={!canUseResult} onClick={handleDownload} variant="outline">
           <Download className="h-4 w-4" />
           下载
         </Button>
-        <Button variant="outline">
+        <Button disabled={!prompt} onClick={() => copyText(prompt)} variant="outline">
           <Copy className="h-4 w-4" />
           复制提示词
         </Button>
-        <Button variant="outline">
+        <Button onClick={() => onSectionChange(item.type === "视频" ? "video" : "image")} variant="outline">
           <RotateCcw className="h-4 w-4" />
           重新生成
         </Button>
@@ -1213,6 +1266,13 @@ function ImageResultPanel({
   isGenerating: boolean
   result: ImageResult | null
 }) {
+  const handleDownload = () => {
+    if (!result?.imageUrl) return
+
+    const extension = getAssetExtension(result.imageUrl, "png")
+    downloadAsset(result.imageUrl, `image-${result.id}.${extension}`)
+  }
+
   if (isGenerating || result?.status === "生成中") {
     return (
       <div className="rounded-lg border border-slate-200 bg-white p-5">
@@ -1257,7 +1317,14 @@ function ImageResultPanel({
               {result.quality} · {result.ratio}
             </div>
           </div>
-          <Button aria-label="下载图片" className="h-8 w-8" size="icon" variant="ghost">
+          <Button
+            aria-label="下载图片"
+            className="h-8 w-8"
+            disabled={!result.imageUrl}
+            onClick={handleDownload}
+            size="icon"
+            variant="ghost"
+          >
             <Download className="h-4 w-4" />
           </Button>
         </div>
@@ -1280,6 +1347,13 @@ function VideoResultPanel({
   isGenerating: boolean
   result: VideoResult | null
 }) {
+  const handleDownload = () => {
+    if (!result?.videoUrl) return
+
+    const extension = getAssetExtension(result.videoUrl, "mp4")
+    downloadAsset(result.videoUrl, `video-${result.id}.${extension}`)
+  }
+
   if (isGenerating || result?.status === "生成中") {
     return (
       <div className="rounded-lg border border-slate-200 bg-white p-5">
@@ -1340,23 +1414,16 @@ function VideoResultPanel({
                 {result.duration} · {result.quality} · {result.aspectRatio}
               </div>
             </div>
-            {result.videoUrl ? (
-              <Button
-                aria-label="下载视频"
-                asChild
-                className="h-8 w-8 text-white hover:bg-white/10"
-                size="icon"
-                variant="ghost"
-              >
-                <a href={result.videoUrl} rel="noreferrer" target="_blank">
-                  <Download className="h-4 w-4" />
-                </a>
-              </Button>
-            ) : (
-              <Button aria-label="下载视频" className="h-8 w-8 text-white hover:bg-white/10" size="icon" variant="ghost">
-                <Download className="h-4 w-4" />
-              </Button>
-            )}
+            <Button
+              aria-label="下载视频"
+              className="h-8 w-8 text-white hover:bg-white/10"
+              disabled={!result.videoUrl}
+              onClick={handleDownload}
+              size="icon"
+              variant="ghost"
+            >
+              <Download className="h-4 w-4" />
+            </Button>
           </div>
         </div>
       </div>
