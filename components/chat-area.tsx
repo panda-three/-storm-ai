@@ -2,6 +2,8 @@
 
 import { useState } from "react"
 import type { WorkspaceSection } from "@/app/page"
+import type { CreditPackage, CustomerServiceSettings, ModelPricing } from "@/lib/supabase"
+import { calculatePricingCredits, redeemCreditCode, refundCredits, spendCredits } from "@/lib/supabase"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -25,21 +27,24 @@ import {
   WalletCards,
 } from "lucide-react"
 
+type ChatWorkspaceSection = Exclude<WorkspaceSection, "admin">
+
 interface ChatAreaProps {
-  activeSection: WorkspaceSection
+  activeSection: ChatWorkspaceSection
   creditBalance: number
+  creditPackages: CreditPackage[]
+  customerService: CustomerServiceSettings
   ledger: Array<{
     amount: number
     code: string
     createdAt: string
     id: string
   }>
-  onCreditBalanceChange: (balance: number) => void
-  onLedgerAdd: (item: { amount: number; code: string }) => void
   onProjectAdd: (item: ProjectItem) => void
   onProjectDelete: (id: string) => void
   onProjectUpdate: (item: ProjectItem) => void
-  onRedeemedCodesChange: (codes: string[]) => void
+  onAccountRefresh: () => Promise<void>
+  modelPricing: ModelPricing[]
   projects: ProjectItem[]
   redeemedCodes: string[]
   sidebarOpen: boolean
@@ -49,7 +54,7 @@ interface ChatAreaProps {
 }
 
 const sectionMeta: Record<
-  WorkspaceSection,
+  ChatWorkspaceSection,
   {
     title: string
     description: string
@@ -117,12 +122,6 @@ const videoModelSettings: Record<
   },
 }
 
-const mockRedeemCodes: Record<string, number> = {
-  STORM100: 100,
-  STORM500: 500,
-  STORM1000: 1000,
-}
-
 function getAssetExtension(url: string, fallback: string) {
   const pathname = new URL(url, window.location.href).pathname
   const extension = pathname.split(".").pop()?.toLowerCase()
@@ -159,6 +158,51 @@ async function copyText(text: string) {
   textarea.select()
   document.execCommand("copy")
   textarea.remove()
+}
+
+function parseDurationSeconds(duration?: string) {
+  if (!duration) return null
+  const parsed = Number.parseInt(duration, 10)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function findModelPricing(
+  pricing: ModelPricing[],
+  params: {
+    aspectRatio?: string
+    duration?: string
+    model: string
+    quality: string
+    type: "image" | "video"
+  }
+) {
+  const durationSeconds = parseDurationSeconds(params.duration)
+
+  return pricing.find((item) => {
+    if (!item.enabled || item.type !== params.type) return false
+    if (item.model !== params.model) return false
+    if ((item.quality ?? "") !== params.quality) return false
+    if (params.type === "video" && item.duration_seconds !== durationSeconds) return false
+    if (params.type === "video" && (item.aspect_ratio ?? "") !== (params.aspectRatio ?? "")) return false
+
+    return true
+  })
+}
+
+function PricingNotice({ estimatedCredits }: { estimatedCredits: number | null }) {
+  return (
+    <div
+      className={
+        estimatedCredits === null
+          ? "mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800"
+          : "mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800"
+      }
+    >
+      {estimatedCredits === null
+        ? "当前参数未配置价格，暂不能提交生成。"
+        : `预计消耗：${estimatedCredits.toLocaleString()} 点（约 ${(estimatedCredits / 100).toFixed(2)} 元）`}
+    </div>
+  )
 }
 
 async function pollTask({
@@ -290,13 +334,14 @@ const seedHistoryItems: ProjectItem[] = [
 export function ChatArea({
   activeSection,
   creditBalance,
+  creditPackages,
+  customerService,
   ledger,
-  onLedgerAdd,
-  onCreditBalanceChange,
+  modelPricing,
   onProjectAdd,
   onProjectDelete,
   onProjectUpdate,
-  onRedeemedCodesChange,
+  onAccountRefresh,
   projects,
   redeemedCodes,
   sidebarOpen,
@@ -378,6 +423,9 @@ export function ChatArea({
           {activeSection === "image" && (
             <ImageWorkspace
               onImageGenerated={handleImageGenerated}
+              creditBalance={creditBalance}
+              modelPricing={modelPricing}
+              onAccountRefresh={onAccountRefresh}
               onProjectUpdated={onProjectUpdate}
               onSectionChange={onSectionChange}
             />
@@ -385,6 +433,9 @@ export function ChatArea({
           {activeSection === "video" && (
             <VideoWorkspace
               onProjectUpdated={onProjectUpdate}
+              creditBalance={creditBalance}
+              modelPricing={modelPricing}
+              onAccountRefresh={onAccountRefresh}
               onSectionChange={onSectionChange}
               onVideoGenerated={handleVideoGenerated}
             />
@@ -399,10 +450,10 @@ export function ChatArea({
           {activeSection === "credits" && (
             <CreditsWorkspace
               creditBalance={creditBalance}
+              creditPackages={creditPackages}
+              customerService={customerService}
               ledger={ledger}
-              onLedgerAdd={onLedgerAdd}
-              onCreditBalanceChange={onCreditBalanceChange}
-              onRedeemedCodesChange={onRedeemedCodesChange}
+              onRedeemSuccess={onAccountRefresh}
               redeemedCodes={redeemedCodes}
               userId={userId}
             />
@@ -414,10 +465,16 @@ export function ChatArea({
 }
 
 function ImageWorkspace({
+  creditBalance,
+  modelPricing,
+  onAccountRefresh,
   onImageGenerated,
   onProjectUpdated,
   onSectionChange,
 }: {
+  creditBalance: number
+  modelPricing: ModelPricing[]
+  onAccountRefresh: () => Promise<void>
   onImageGenerated: (result: ImageResult) => void
   onProjectUpdated: (item: ProjectItem) => void
   onSectionChange: (section: WorkspaceSection) => void
@@ -430,6 +487,12 @@ function ImageWorkspace({
   const [isGenerating, setIsGenerating] = useState(false)
   const [error, setError] = useState("")
   const [result, setResult] = useState<ImageResult | null>(null)
+  const currentPricing = findModelPricing(modelPricing, {
+    model,
+    quality,
+    type: "image",
+  })
+  const estimatedCredits = currentPricing ? calculatePricingCredits(currentPricing) : null
 
   const handleGenerate = async () => {
     const trimmedPrompt = prompt.trim()
@@ -440,11 +503,33 @@ function ImageWorkspace({
       return
     }
 
+    if (!currentPricing) {
+      setError("当前模型参数未配置价格，请联系管理员配置后再生成。")
+      return
+    }
+
+    if (estimatedCredits === null || creditBalance < estimatedCredits) {
+      setError("点数余额不足，请先充值。")
+      return
+    }
+
     setError("")
     setIsGenerating(true)
     setResult(null)
 
+    const billingReference = `generate_image_${Date.now()}`
+    const billingReason = `AI 生图 · ${model} · ${quality}`
+    let billed = false
+
     try {
+      await spendCredits({
+        amount: estimatedCredits,
+        reason: billingReason,
+        reference: billingReference,
+      })
+      billed = true
+      await onAccountRefresh()
+
       const response = await fetch("/api/generate/image", {
         method: "POST",
         headers: {
@@ -506,11 +591,38 @@ function ImageWorkspace({
             taskId: nextResult.taskId,
             taskError: task.taskError,
           })
+
+          if (status === "失败") {
+            refundCredits({
+              amount: estimatedCredits,
+              reason: `${billingReason}失败退款`,
+              reference: billingReference,
+            })
+              .then(onAccountRefresh)
+              .catch((error) => {
+                setError(error instanceof Error ? error.message : "任务失败，但自动退款失败，请联系管理员。")
+              })
+          }
         },
       }).catch((error) => {
+        refundCredits({
+          amount: estimatedCredits,
+          reason: `${billingReason}状态查询失败退款`,
+          reference: billingReference,
+        })
+          .then(onAccountRefresh)
+          .catch(() => undefined)
         setError(error instanceof Error ? error.message : "任务状态查询失败。")
       })
     } catch (error) {
+      if (billed) {
+        await refundCredits({
+          amount: estimatedCredits,
+          reason: `${billingReason}提交失败退款`,
+          reference: billingReference,
+        }).catch(() => undefined)
+        await onAccountRefresh()
+      }
       setError(error instanceof Error ? error.message : "生图任务提交失败。")
     } finally {
       setIsGenerating(false)
@@ -557,10 +669,11 @@ function ImageWorkspace({
               {error}
             </div>
           )}
+          <PricingNotice estimatedCredits={estimatedCredits} />
           <div className="mt-5 flex flex-col gap-3 sm:flex-row">
             <Button
               className="bg-indigo-600 text-white hover:bg-indigo-700"
-              disabled={isGenerating}
+              disabled={isGenerating || !currentPricing}
               onClick={handleGenerate}
             >
               {isGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
@@ -581,10 +694,16 @@ function ImageWorkspace({
 }
 
 function VideoWorkspace({
+  creditBalance,
+  modelPricing,
+  onAccountRefresh,
   onProjectUpdated,
   onVideoGenerated,
   onSectionChange,
 }: {
+  creditBalance: number
+  modelPricing: ModelPricing[]
+  onAccountRefresh: () => Promise<void>
   onProjectUpdated: (item: ProjectItem) => void
   onVideoGenerated: (result: VideoResult) => void
   onSectionChange: (section: WorkspaceSection) => void
@@ -598,6 +717,14 @@ function VideoWorkspace({
   const [isGenerating, setIsGenerating] = useState(false)
   const [error, setError] = useState("")
   const [result, setResult] = useState<VideoResult | null>(null)
+  const currentPricing = findModelPricing(modelPricing, {
+    aspectRatio,
+    duration,
+    model,
+    quality,
+    type: "video",
+  })
+  const estimatedCredits = currentPricing ? calculatePricingCredits(currentPricing) : null
 
   const handleGenerate = async () => {
     const trimmedPrompt = prompt.trim()
@@ -608,11 +735,33 @@ function VideoWorkspace({
       return
     }
 
+    if (!currentPricing) {
+      setError("当前模型参数未配置价格，请联系管理员配置后再生成。")
+      return
+    }
+
+    if (estimatedCredits === null || creditBalance < estimatedCredits) {
+      setError("点数余额不足，请先充值。")
+      return
+    }
+
     setError("")
     setIsGenerating(true)
     setResult(null)
 
+    const billingReference = `generate_video_${Date.now()}`
+    const billingReason = `AI 视频 · ${model} · ${duration} · ${quality} · ${aspectRatio}`
+    let billed = false
+
     try {
+      await spendCredits({
+        amount: estimatedCredits,
+        reason: billingReason,
+        reference: billingReference,
+      })
+      billed = true
+      await onAccountRefresh()
+
       const response = await fetch("/api/generate/video", {
         method: "POST",
         headers: {
@@ -678,11 +827,38 @@ function VideoWorkspace({
             taskId: nextResult.taskId,
             taskError: nextResult.taskError,
           })
+
+          if (status === "失败") {
+            refundCredits({
+              amount: estimatedCredits,
+              reason: `${billingReason}失败退款`,
+              reference: billingReference,
+            })
+              .then(onAccountRefresh)
+              .catch((error) => {
+                setError(error instanceof Error ? error.message : "任务失败，但自动退款失败，请联系管理员。")
+              })
+          }
         },
       }).catch((error) => {
+        refundCredits({
+          amount: estimatedCredits,
+          reason: `${billingReason}状态查询失败退款`,
+          reference: billingReference,
+        })
+          .then(onAccountRefresh)
+          .catch(() => undefined)
         setError(error instanceof Error ? error.message : "任务状态查询失败。")
       })
     } catch (error) {
+      if (billed) {
+        await refundCredits({
+          amount: estimatedCredits,
+          reason: `${billingReason}提交失败退款`,
+          reference: billingReference,
+        }).catch(() => undefined)
+        await onAccountRefresh()
+      }
       setError(error instanceof Error ? error.message : "视频任务提交失败。")
     } finally {
       setIsGenerating(false)
@@ -731,10 +907,11 @@ function VideoWorkspace({
               {error}
             </div>
           )}
+          <PricingNotice estimatedCredits={estimatedCredits} />
           <div className="mt-5 flex flex-col gap-3 sm:flex-row">
             <Button
               className="bg-indigo-600 text-white hover:bg-indigo-700"
-              disabled={isGenerating}
+              disabled={isGenerating || !currentPricing}
               onClick={handleGenerate}
             >
               {isGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
@@ -1023,30 +1200,31 @@ type RedeemFeedback =
 
 function CreditsWorkspace({
   creditBalance,
+  creditPackages,
+  customerService,
   ledger,
-  onLedgerAdd,
-  onCreditBalanceChange,
-  onRedeemedCodesChange,
+  onRedeemSuccess,
   redeemedCodes,
   userId,
 }: {
   creditBalance: number
+  creditPackages: CreditPackage[]
+  customerService: CustomerServiceSettings
   ledger: Array<{
     amount: number
     code: string
     createdAt: string
     id: string
   }>
-  onLedgerAdd: (item: { amount: number; code: string }) => void
-  onCreditBalanceChange: (balance: number) => void
-  onRedeemedCodesChange: (codes: string[]) => void
+  onRedeemSuccess: () => Promise<void>
   redeemedCodes: string[]
   userId: string
 }) {
   const [redeemCode, setRedeemCode] = useState("")
   const [feedback, setFeedback] = useState<RedeemFeedback>(null)
+  const [isRedeeming, setIsRedeeming] = useState(false)
 
-  const handleRedeem = () => {
+  const handleRedeem = async () => {
     const normalizedCode = redeemCode.trim().toUpperCase()
 
     if (!normalizedCode) {
@@ -1057,35 +1235,25 @@ function CreditsWorkspace({
       return
     }
 
-    if (redeemedCodes.includes(normalizedCode)) {
+    setIsRedeeming(true)
+    setFeedback(null)
+
+    try {
+      const result = await redeemCreditCode(normalizedCode)
+      await onRedeemSuccess()
+      setRedeemCode("")
+      setFeedback({
+        type: "success",
+        message: `兑换成功，已增加 ${result.credits.toLocaleString()} 点。`,
+      })
+    } catch (error) {
       setFeedback({
         type: "error",
-        message: "该兑换码已在当前会话中使用。",
+        message: error instanceof Error ? error.message : "兑换失败，请稍后重试。",
       })
-      return
+    } finally {
+      setIsRedeeming(false)
     }
-
-    const amount = mockRedeemCodes[normalizedCode]
-
-    if (!amount) {
-      setFeedback({
-        type: "error",
-        message: "兑换码无效，请检查后重试。",
-      })
-      return
-    }
-
-    onCreditBalanceChange(creditBalance + amount)
-    onRedeemedCodesChange([normalizedCode, ...redeemedCodes])
-    onLedgerAdd({
-      amount,
-      code: normalizedCode,
-    })
-    setRedeemCode("")
-    setFeedback({
-      type: "success",
-      message: `兑换成功，已增加 ${amount.toLocaleString()} 点。`,
-    })
   }
 
   return (
@@ -1100,7 +1268,7 @@ function CreditsWorkspace({
             <p className="mt-2 text-sm text-slate-500">向客服购买兑换码后，在这里输入兑换码完成点数充值。</p>
           </div>
           <Badge className="border-emerald-200 bg-emerald-50 text-emerald-700" variant="outline">
-            Mock 兑换
+            Supabase 兑换
           </Badge>
         </div>
 
@@ -1116,7 +1284,7 @@ function CreditsWorkspace({
         </div>
 
         <div className="mt-4 rounded-lg bg-slate-50 p-4">
-          <div className="text-sm font-medium text-slate-700">本地账户</div>
+          <div className="text-sm font-medium text-slate-700">Supabase 用户 ID</div>
           <div className="mt-1 break-all text-xs text-slate-500">{userId}</div>
         </div>
 
@@ -1135,8 +1303,9 @@ function CreditsWorkspace({
             className="h-10 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition focus:border-emerald-300 focus:bg-white focus:ring-2 focus:ring-emerald-100"
             placeholder="请输入兑换码"
           />
-          <Button className="bg-emerald-600 text-white hover:bg-emerald-700" onClick={handleRedeem}>
-            立即兑换
+          <Button className="bg-emerald-600 text-white hover:bg-emerald-700" disabled={isRedeeming} onClick={handleRedeem}>
+            {isRedeeming ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            {isRedeeming ? "兑换中..." : "立即兑换"}
           </Button>
         </div>
 
@@ -1154,22 +1323,24 @@ function CreditsWorkspace({
         )}
 
         <div className="mt-5 rounded-lg bg-slate-50 p-4">
-          <div className="text-sm font-medium text-slate-700">测试兑换码</div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {Object.entries(mockRedeemCodes).map(([code, amount]) => (
-              <button
-                className="cursor-pointer rounded-md border border-slate-200 bg-white px-3 py-2 text-left text-xs transition hover:border-emerald-200 hover:bg-emerald-50"
-                key={code}
-                onClick={() => {
-                  setRedeemCode(code)
-                  setFeedback(null)
-                }}
-                type="button"
-              >
-                <span className="font-medium text-slate-700">{code}</span>
-                <span className="ml-2 text-slate-500">+{amount} 点</span>
-              </button>
-            ))}
+          <div className="text-sm font-medium text-slate-700">点数套餐</div>
+          <div className="mt-2 grid gap-2">
+            {creditPackages.length === 0 ? (
+              <div className="text-xs text-slate-500">暂无启用套餐，请联系管理员配置。</div>
+            ) : (
+              creditPackages.map((item) => (
+                <div
+                  className="flex items-center justify-between gap-3 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
+                  key={item.id}
+                >
+                  <div>
+                    <div className="font-medium text-slate-700">{item.name}</div>
+                    <div className="text-xs text-slate-500">{item.price_cny.toFixed(2)} 元</div>
+                  </div>
+                  <div className="font-semibold text-emerald-700">{item.credits.toLocaleString()} 点</div>
+                </div>
+              ))
+            )}
           </div>
           {redeemedCodes.length > 0 && (
             <div className="mt-3 text-xs text-slate-500">
@@ -1204,17 +1375,26 @@ function CreditsWorkspace({
           <h2 className="text-base font-semibold">客服微信二维码</h2>
         </div>
         <div className="mt-5 flex aspect-square items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50">
-          <div className="text-center">
-            <QrCode className="mx-auto h-16 w-16 text-slate-400" />
-            <p className="mt-3 text-sm font-medium text-slate-700">二维码图片占位</p>
-            <p className="mt-1 text-xs text-slate-500">替换为正式客服微信二维码</p>
-          </div>
+          {customerService.qrCodeUrl ? (
+            <img
+              alt="客服微信二维码"
+              className="h-full w-full rounded-lg object-cover"
+              src={customerService.qrCodeUrl}
+            />
+          ) : (
+            <div className="text-center">
+              <QrCode className="mx-auto h-16 w-16 text-slate-400" />
+              <p className="mt-3 text-sm font-medium text-slate-700">二维码图片占位</p>
+              <p className="mt-1 text-xs text-slate-500">请在管理员后台配置二维码 URL</p>
+            </div>
+          )}
         </div>
         <div className="mt-4 space-y-2 rounded-lg bg-slate-50 p-4 text-sm text-slate-600">
           <div className="font-medium text-slate-800">购买流程</div>
-          <div>1. 添加客服微信。</div>
+          <div>1. 添加客服微信{customerService.wechatId ? `：${customerService.wechatId}` : "。"}</div>
           <div>2. 向客服购买 AI 点数兑换码。</div>
           <div>3. 回到本页输入兑换码并完成充值。</div>
+          {customerService.description && <div className="pt-2 text-xs text-slate-500">{customerService.description}</div>}
         </div>
       </div>
     </section>

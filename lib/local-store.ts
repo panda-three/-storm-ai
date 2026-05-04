@@ -7,7 +7,7 @@ export interface CreditLedgerItem {
   code: string
   createdAt: string
   id: string
-  type: "redeem"
+  type: "redeem" | "generate" | "refund"
 }
 
 export interface LocalAccountData {
@@ -15,6 +15,7 @@ export interface LocalAccountData {
   ledger: CreditLedgerItem[]
   projects: ProjectItem[]
   redeemedCodes: string[]
+  role: "user" | "admin"
   userId: string
 }
 
@@ -24,6 +25,7 @@ export function createDefaultAccount(): LocalAccountData {
     ledger: [],
     projects: [],
     redeemedCodes: [],
+    role: "user",
     userId: `local_${Date.now().toString(36)}`,
   }
 }

@@ -10,15 +10,22 @@ import {
   Film,
   History,
   ImageIcon,
+  LogOut,
+  RefreshCcw,
+  Settings,
   MessageCircle,
   Sparkles,
 } from "lucide-react"
 
 interface SidebarProps {
   activeSection: WorkspaceSection
+  canAccessAdmin: boolean
   creditBalance: number
+  email: string
   open: boolean
   onSectionChange: (section: WorkspaceSection) => void
+  onRefreshAccount: () => void
+  onSignOut: () => void
   onToggle: () => void
 }
 
@@ -54,11 +61,27 @@ const navItems: Array<{
   },
 ]
 
+const adminNavItem: {
+  id: WorkspaceSection
+  label: string
+  description: string
+  icon: typeof ImageIcon
+} = {
+  id: "admin",
+  label: "管理员后台",
+  description: "套餐、兑换码、价格",
+  icon: Settings,
+}
+
 export function Sidebar({
   activeSection,
+  canAccessAdmin,
   creditBalance,
+  email,
   open,
   onSectionChange,
+  onRefreshAccount,
+  onSignOut,
   onToggle,
 }: SidebarProps) {
   return (
@@ -114,7 +137,7 @@ export function Sidebar({
       </div>
 
       <nav className="flex-1 space-y-2 p-3">
-        {navItems.map((item) => {
+        {[...navItems, ...(canAccessAdmin ? [adminNavItem] : [])].map((item) => {
           const Icon = item.icon
           const active = activeSection === item.id
 
@@ -153,10 +176,18 @@ export function Sidebar({
             <MessageCircle className="h-4 w-4" />
           </div>
           <div className="min-w-0">
-            <div className="text-sm font-medium">客服微信购买点数</div>
-            <div className="truncate text-xs text-slate-500">首页充值区查看二维码</div>
+            <div className="text-sm font-medium">当前账户</div>
+            <div className="truncate text-xs text-slate-500">{email}</div>
           </div>
         </div>
+        <Button className="mt-3 w-full" onClick={onSignOut} variant="outline">
+          <LogOut className="h-4 w-4" />
+          退出登录
+        </Button>
+        <Button className="mt-2 w-full" onClick={onRefreshAccount} variant="ghost">
+          <RefreshCcw className="h-4 w-4" />
+          刷新权限
+        </Button>
       </div>
     </aside>
   )

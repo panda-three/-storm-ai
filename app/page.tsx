@@ -1,41 +1,159 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
+import type { User } from "@supabase/supabase-js"
+import { AuthPanel } from "@/components/auth-panel"
 import { Sidebar } from "@/components/sidebar"
 import { ChatArea, type ProjectItem } from "@/components/chat-area"
+import { AdminWorkspace } from "@/components/admin-workspace"
 import {
   createDefaultAccount,
-  loadLocalAccount,
-  saveLocalAccount,
-  type CreditLedgerItem,
   type LocalAccountData,
 } from "@/lib/local-store"
+import {
+  type CreditPackage,
+  type CustomerServiceSettings,
+  type AdminAccountSummary,
+  type ModelPricing,
+  type RedeemCode,
+  getSupabaseClient,
+  loadAdminAccounts,
+  loadCreditPackages,
+  loadCustomerServiceSettings,
+  loadModelPricing,
+  loadRedeemCodes,
+  loadSupabaseAccount,
+  saveSupabaseAccount,
+} from "@/lib/supabase"
 
-export type WorkspaceSection = "image" | "video" | "history" | "credits"
+export type WorkspaceSection = "image" | "video" | "history" | "credits" | "admin"
 
 export default function Home() {
   const [account, setAccount] = useState<LocalAccountData>(() => createDefaultAccount())
-  const [hydrated, setHydrated] = useState(false)
+  const [authReady, setAuthReady] = useState(false)
+  const [user, setUser] = useState<User | null>(null)
+  const [syncError, setSyncError] = useState("")
+  const [customerService, setCustomerService] = useState<CustomerServiceSettings>({
+    description: "联系客服购买兑换码后，在站内输入兑换码完成点数充值。",
+    qrCodeUrl: "",
+    wechatId: "",
+  })
+  const [creditPackages, setCreditPackages] = useState<CreditPackage[]>([])
+  const [adminAccounts, setAdminAccounts] = useState<AdminAccountSummary[]>([])
+  const [modelPricing, setModelPricing] = useState<ModelPricing[]>([])
+  const [redeemCodes, setRedeemCodes] = useState<RedeemCode[]>([])
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [activeSection, setActiveSection] = useState<WorkspaceSection>("image")
 
   useEffect(() => {
-    setAccount(loadLocalAccount())
-    setHydrated(true)
+    const supabase = getSupabaseClient()
+
+    if (!supabase) {
+      setAuthReady(true)
+      return
+    }
+
+    supabase.auth.getSession().then(({ data }) => {
+      setUser(data.session?.user ?? null)
+      setAuthReady(true)
+    })
+
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null)
+      setAuthReady(true)
+    })
+
+    return () => data.subscription.unsubscribe()
   }, [])
 
   useEffect(() => {
-    if (hydrated) {
-      saveLocalAccount(account)
-    }
-  }, [account, hydrated])
+    let active = true
 
-  const setCreditBalance = (creditBalance: number) => {
-    setAccount((current) => ({
-      ...current,
-      creditBalance,
-    }))
+    async function loadAccount() {
+      if (!user) return
+
+      try {
+        setSyncError("")
+        const remoteAccount = await loadSupabaseAccount(user.id)
+        if (!active) return
+
+        setAccount({
+          creditBalance: remoteAccount?.credit_balance ?? 2680,
+          ledger: remoteAccount?.ledger ?? [],
+          projects: remoteAccount?.projects ?? [],
+          redeemedCodes: remoteAccount?.redeemed_codes ?? [],
+          role: remoteAccount?.role ?? "user",
+          userId: user.id,
+        })
+      } catch (error) {
+        setSyncError(error instanceof Error ? error.message : "加载 Supabase 数据失败。")
+      }
+    }
+
+    loadAccount()
+
+    return () => {
+      active = false
+    }
+  }, [user])
+
+  const refreshAccount = async () => {
+    if (!user) return
+
+    try {
+      setSyncError("")
+      const remoteAccount = await loadSupabaseAccount(user.id)
+      setAccount({
+        creditBalance: remoteAccount?.credit_balance ?? 2680,
+        ledger: remoteAccount?.ledger ?? [],
+        projects: remoteAccount?.projects ?? [],
+        redeemedCodes: remoteAccount?.redeemed_codes ?? [],
+        role: remoteAccount?.role ?? "user",
+        userId: user.id,
+      })
+    } catch (error) {
+      setSyncError(error instanceof Error ? error.message : "刷新 Supabase 数据失败。")
+    }
   }
+
+  const refreshBillingConfig = useCallback(async () => {
+    if (!user) return
+
+    try {
+      setSyncError("")
+      const [settings, packages, pricing] = await Promise.all([
+        loadCustomerServiceSettings(),
+        loadCreditPackages({ includeDisabled: account.role === "admin" }),
+        loadModelPricing({ includeDisabled: account.role === "admin" }),
+      ])
+      setCustomerService(settings)
+      setCreditPackages(packages)
+      setModelPricing(pricing)
+      if (account.role === "admin") {
+        const [codes, accounts] = await Promise.all([loadRedeemCodes(), loadAdminAccounts()])
+        setRedeemCodes(codes)
+        setAdminAccounts(accounts)
+      }
+    } catch (error) {
+      setSyncError(error instanceof Error ? error.message : "加载充值配置失败。")
+    }
+  }, [account.role, user])
+
+  useEffect(() => {
+    refreshBillingConfig()
+  }, [refreshBillingConfig])
+
+  useEffect(() => {
+    if (!user || account.userId !== user.id) return
+
+    const timer = window.setTimeout(() => {
+      saveSupabaseAccount(account).catch((error) => {
+        setSyncError(error instanceof Error ? error.message : "保存 Supabase 数据失败。")
+      })
+    }, 400)
+
+    return () => window.clearTimeout(timer)
+  }, [account, user])
 
   const addProject = (project: ProjectItem) => {
     setAccount((current) => ({
@@ -58,47 +176,80 @@ export default function Home() {
     }))
   }
 
-  const addLedgerItem = ({ amount, code }: { amount: number; code: string }) => {
-    const ledgerItem: CreditLedgerItem = {
-      amount,
-      code,
-      createdAt: new Date().toLocaleString("zh-CN"),
-      id: `ledger_${Date.now()}`,
-      type: "redeem",
-    }
+  const handleSignOut = async () => {
+    const supabase = getSupabaseClient()
+    await supabase?.auth.signOut()
+    setUser(null)
+    setAccount(createDefaultAccount())
+  }
 
-    setAccount((current) => ({
-      ...current,
-      ledger: [ledgerItem, ...current.ledger],
-    }))
+  if (!authReady) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#f7f8fb] text-sm text-slate-500">
+        正在加载账户...
+      </div>
+    )
+  }
+
+  if (!user) {
+    return <AuthPanel onAuthed={() => undefined} />
   }
 
   return (
     <div className="flex h-screen bg-[#f7f8fb] text-slate-950">
       <Sidebar
         activeSection={activeSection}
+        canAccessAdmin={account.role === "admin"}
         creditBalance={account.creditBalance}
+        email={user.email ?? "未设置邮箱"}
         open={sidebarOpen}
+        onRefreshAccount={refreshAccount}
         onSectionChange={setActiveSection}
+        onSignOut={handleSignOut}
         onToggle={() => setSidebarOpen(!sidebarOpen)}
       />
-      <ChatArea
-        activeSection={activeSection}
-        creditBalance={account.creditBalance}
-        ledger={account.ledger}
-        onLedgerAdd={addLedgerItem}
-        onCreditBalanceChange={setCreditBalance}
-        onProjectAdd={addProject}
-        onProjectDelete={deleteProject}
-        onProjectUpdate={updateProject}
-        onRedeemedCodesChange={(redeemedCodes) => setAccount((current) => ({ ...current, redeemedCodes }))}
-        projects={account.projects}
-        redeemedCodes={account.redeemedCodes}
-        sidebarOpen={sidebarOpen}
-        onSectionChange={setActiveSection}
-        onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
-        userId={account.userId}
-      />
+      {syncError && (
+        <div className="fixed left-1/2 top-3 z-50 -translate-x-1/2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 shadow-sm">
+          {syncError}
+        </div>
+      )}
+      {activeSection === "admin" ? (
+        <AdminWorkspace
+          canAccessAdmin={account.role === "admin"}
+          adminAccounts={adminAccounts}
+          creditPackages={creditPackages}
+          customerService={customerService}
+          modelPricing={modelPricing}
+          onModelPricingChange={setModelPricing}
+          onPackagesChange={setCreditPackages}
+          onRefresh={refreshBillingConfig}
+          onRedeemCodesChange={setRedeemCodes}
+          onSectionChange={setActiveSection}
+          onSettingsChange={setCustomerService}
+          onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+          redeemCodes={redeemCodes}
+          sidebarOpen={sidebarOpen}
+        />
+      ) : (
+        <ChatArea
+          activeSection={activeSection}
+          creditBalance={account.creditBalance}
+          creditPackages={creditPackages.filter((item) => item.enabled)}
+          customerService={customerService}
+          ledger={account.ledger}
+          modelPricing={modelPricing.filter((item) => item.enabled)}
+          onProjectAdd={addProject}
+          onProjectDelete={deleteProject}
+          onProjectUpdate={updateProject}
+          onAccountRefresh={refreshAccount}
+          projects={account.projects}
+          redeemedCodes={account.redeemedCodes}
+          sidebarOpen={sidebarOpen}
+          onSectionChange={setActiveSection}
+          onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+          userId={account.userId}
+        />
+      )}
     </div>
   )
 }
