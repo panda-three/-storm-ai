@@ -578,7 +578,15 @@ function ImageWorkspace({
         taskId: data.taskId,
         onUpdate: (task) => {
           const imageUrls = task.imageUrls ?? []
-          const status = task.status === "failed" ? "失败" : task.status === "completed" ? "已完成" : "生成中"
+          const status =
+            task.status === "failed" || (task.status === "completed" && imageUrls.length === 0)
+              ? "失败"
+              : task.status === "completed"
+                ? "已完成"
+                : "生成中"
+          const taskError =
+            task.taskError ||
+            (task.status === "completed" && imageUrls.length === 0 ? "任务已完成，但接口没有返回图片地址。" : "")
           const nextResult: ImageResult = {
             ...generatedResult,
             status,
@@ -599,7 +607,7 @@ function ImageWorkspace({
             previewLabel: `${nextResult.quality} · ${nextResult.ratio}`,
             previewUrl: nextResult.imageUrl,
             taskId: nextResult.taskId,
-            taskError: task.taskError,
+            taskError,
           })
 
           if (status === "失败") {
@@ -841,12 +849,19 @@ function VideoWorkspace({
       pollTask({
         taskId: data.taskId,
         onUpdate: (task) => {
-          const status = task.status === "failed" ? "失败" : task.status === "completed" ? "已完成" : "生成中"
+          const status =
+            task.status === "failed" || (task.status === "completed" && !task.videoUrl)
+              ? "失败"
+              : task.status === "completed"
+                ? "已完成"
+                : "生成中"
+          const taskError =
+            task.taskError || (task.status === "completed" && !task.videoUrl ? "任务已完成，但接口没有返回视频地址。" : "")
           const nextResult: VideoResult = {
             ...generatedResult,
             status,
             progress: task.progress ?? generatedResult.progress,
-            taskError: task.taskError,
+            taskError,
             videoUrl: task.videoUrl ?? "",
           }
 

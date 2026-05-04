@@ -368,6 +368,17 @@ function normalizeTaskStatus(taskId: string, response: ApimartTaskResponse): Nor
   const data = response.data
   const statusText = findStringValue(data, ["status", "state", "task_status"])
   const progress = findNumberValue(data, ["progress", "percentage"]) ?? (isCompletedStatus(statusText) ? 100 : 0)
+  const imageUrls = extractMediaUrls(data, ["image", "image_url", "image_urls", "images", "url", "urls", "output", "result"], [
+    "png",
+    "jpg",
+    "jpeg",
+    "webp",
+  ])
+  const videoUrls = extractMediaUrls(data, ["video", "video_url", "video_urls", "videos", "url", "urls", "output", "result"], [
+    "mp4",
+    "mov",
+    "webm",
+  ])
 
   return {
     ok: true,
@@ -375,8 +386,8 @@ function normalizeTaskStatus(taskId: string, response: ApimartTaskResponse): Nor
     taskId,
     status: normalizeStatus(statusText),
     progress,
-    imageUrls: extractUrls(data, ["png", "jpg", "jpeg", "webp"]),
-    videoUrl: extractUrls(data, ["mp4", "mov", "webm"])[0] ?? "",
+    imageUrls,
+    videoUrl: videoUrls[0] ?? "",
     taskError: findStringValue(data, ["message", "error_message", "reason"]),
     raw: data,
   }
@@ -453,6 +464,36 @@ function extractUrls(value: unknown, extensions: string[]): string[] {
     const normalized = url.split("?")[0].toLowerCase()
     return extensions.some((extension) => normalized.endsWith(`.${extension}`))
   })
+}
+
+function extractMediaUrls(value: unknown, preferredKeys: string[], extensions: string[]) {
+  const keyedUrls = new Set<string>()
+  collectKeyedUrls(value, keyedUrls, preferredKeys)
+
+  const preferred = Array.from(keyedUrls)
+  if (preferred.length > 0) return preferred
+
+  return extractUrls(value, extensions)
+}
+
+function collectKeyedUrls(value: unknown, urls: Set<string>, preferredKeys: string[]) {
+  if (!value || typeof value !== "object") return
+
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectKeyedUrls(item, urls, preferredKeys))
+    return
+  }
+
+  for (const [key, nested] of Object.entries(value)) {
+    const normalizedKey = key.toLowerCase()
+
+    if (preferredKeys.includes(normalizedKey)) {
+      collectUrls(nested, urls)
+      continue
+    }
+
+    collectKeyedUrls(nested, urls, preferredKeys)
+  }
 }
 
 function collectUrls(value: unknown, urls: Set<string>) {
