@@ -32,6 +32,7 @@ type ChatWorkspaceSection = Exclude<WorkspaceSection, "admin">
 
 interface ChatAreaProps {
   activeSection: ChatWorkspaceSection
+  billingReady: boolean
   creditBalance: number
   creditPackages: CreditPackage[]
   customerService: CustomerServiceSettings
@@ -181,6 +182,14 @@ function PricingNotice({ estimatedCredits }: { estimatedCredits: number | null }
   )
 }
 
+function PricingLoadingNotice() {
+  return (
+    <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">
+      正在加载价格配置...
+    </div>
+  )
+}
+
 async function pollTask({
   intervalMs = 2500,
   maxAttempts = 80,
@@ -309,6 +318,7 @@ const seedHistoryItems: ProjectItem[] = [
 
 export function ChatArea({
   activeSection,
+  billingReady,
   creditBalance,
   creditPackages,
   customerService,
@@ -398,6 +408,7 @@ export function ChatArea({
         <div className="mx-auto grid max-w-6xl gap-5">
           {activeSection === "image" && (
             <ImageWorkspace
+              billingReady={billingReady}
               onImageGenerated={handleImageGenerated}
               creditBalance={creditBalance}
               modelPricing={modelPricing}
@@ -408,6 +419,7 @@ export function ChatArea({
           )}
           {activeSection === "video" && (
             <VideoWorkspace
+              billingReady={billingReady}
               onProjectUpdated={onProjectUpdate}
               creditBalance={creditBalance}
               modelPricing={modelPricing}
@@ -441,6 +453,7 @@ export function ChatArea({
 }
 
 function ImageWorkspace({
+  billingReady,
   creditBalance,
   modelPricing,
   onAccountRefresh,
@@ -448,6 +461,7 @@ function ImageWorkspace({
   onProjectUpdated,
   onSectionChange,
 }: {
+  billingReady: boolean
   creditBalance: number
   modelPricing: ModelPricing[]
   onAccountRefresh: () => Promise<void>
@@ -485,6 +499,11 @@ function ImageWorkspace({
       setError("请先输入生图提示词。")
       setResult(null)
       window.requestAnimationFrame(() => promptRef.current?.focus())
+      return
+    }
+
+    if (!billingReady) {
+      setError("价格配置正在加载，请稍后再试。")
       return
     }
 
@@ -666,11 +685,11 @@ function ImageWorkspace({
               {error}
             </div>
           )}
-          <PricingNotice estimatedCredits={estimatedCredits} />
+          {billingReady ? <PricingNotice estimatedCredits={estimatedCredits} /> : <PricingLoadingNotice />}
           <div className="mt-5 flex flex-col gap-3 sm:flex-row">
             <Button
               className="bg-indigo-600 text-white hover:bg-indigo-700"
-              disabled={isGenerating || !currentPricing}
+              disabled={isGenerating || !billingReady || !currentPricing}
               onClick={handleGenerate}
             >
               {isGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
@@ -691,6 +710,7 @@ function ImageWorkspace({
 }
 
 function VideoWorkspace({
+  billingReady,
   creditBalance,
   modelPricing,
   onAccountRefresh,
@@ -698,6 +718,7 @@ function VideoWorkspace({
   onVideoGenerated,
   onSectionChange,
 }: {
+  billingReady: boolean
   creditBalance: number
   modelPricing: ModelPricing[]
   onAccountRefresh: () => Promise<void>
@@ -738,6 +759,11 @@ function VideoWorkspace({
       setError("请先输入视频提示词。")
       setResult(null)
       window.requestAnimationFrame(() => promptRef.current?.focus())
+      return
+    }
+
+    if (!billingReady) {
+      setError("价格配置正在加载，请稍后再试。")
       return
     }
 
@@ -925,11 +951,11 @@ function VideoWorkspace({
               {error}
             </div>
           )}
-          <PricingNotice estimatedCredits={estimatedCredits} />
+          {billingReady ? <PricingNotice estimatedCredits={estimatedCredits} /> : <PricingLoadingNotice />}
           <div className="mt-5 flex flex-col gap-3 sm:flex-row">
             <Button
               className="bg-indigo-600 text-white hover:bg-indigo-700"
-              disabled={isGenerating || !currentPricing}
+              disabled={isGenerating || !billingReady || !currentPricing}
               onClick={handleGenerate}
             >
               {isGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}

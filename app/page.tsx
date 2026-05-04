@@ -63,6 +63,7 @@ export default function Home() {
   const [creditPackages, setCreditPackages] = useState<CreditPackage[]>([])
   const [adminAccounts, setAdminAccounts] = useState<AdminAccountSummary[]>([])
   const [modelPricing, setModelPricing] = useState<ModelPricing[]>([])
+  const [billingReady, setBillingReady] = useState(false)
   const [redeemCodes, setRedeemCodes] = useState<RedeemCode[]>([])
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [activeSection, setActiveSection] = useState<WorkspaceSection>("image")
@@ -176,10 +177,14 @@ export default function Home() {
   }
 
   const refreshBillingConfig = useCallback(async () => {
-    if (!user) return
+    if (!user) {
+      setBillingReady(false)
+      return
+    }
 
     try {
       setSyncError("")
+      setBillingReady(false)
       const [settings, packages, pricing] = await Promise.all([
         loadCustomerServiceSettings(),
         loadCreditPackages({ includeDisabled: account.role === "admin" }),
@@ -193,8 +198,10 @@ export default function Home() {
         setRedeemCodes(codes)
         setAdminAccounts(accounts)
       }
+      setBillingReady(true)
     } catch (error) {
       setSyncError(getErrorMessage(error, "加载充值配置失败。"))
+      setBillingReady(true)
     }
   }, [account.role, user])
 
@@ -299,6 +306,7 @@ export default function Home() {
       ) : (
         <ChatArea
           activeSection={activeSection}
+          billingReady={billingReady}
           creditBalance={account.creditBalance}
           creditPackages={creditPackages.filter((item) => item.enabled)}
           customerService={customerService}
