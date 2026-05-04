@@ -4,7 +4,7 @@ import tls from "node:tls"
 import type { Duplex } from "node:stream"
 
 const APIMART_BASE_URL = process.env.APIMART_BASE_URL ?? "https://api.apimart.ai/v1"
-const APIMART_PROXY_URL = process.env.APIMART_PROXY_URL
+const APIMART_PROXY_URL = getApimartProxyUrl()
 
 export type GenerationKind = "image" | "video"
 
@@ -242,6 +242,23 @@ function apimartRequest(path: string, method: "GET" | "POST", body?: Record<stri
     if (payload) request.write(payload)
     request.end()
   })
+}
+
+function getApimartProxyUrl() {
+  const proxyUrl = process.env.APIMART_PROXY_URL?.trim()
+
+  if (!proxyUrl) return ""
+
+  const isLocalProxy =
+    proxyUrl.includes("127.0.0.1") ||
+    proxyUrl.includes("localhost") ||
+    proxyUrl.includes("[::1]")
+
+  if (isLocalProxy && (process.env.VERCEL || process.env.NODE_ENV === "production")) {
+    return ""
+  }
+
+  return proxyUrl
 }
 
 class ConnectProxyAgent extends https.Agent {
