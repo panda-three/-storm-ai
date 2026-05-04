@@ -432,3 +432,8 @@ begin
   );
 end;
 $$;
+
+grant execute on function public.redeem_credit_code(text) to authenticated;
+grant execute on function public.save_user_projects(jsonb) to authenticated;
+grant execute on function public.spend_credits(integer, text, text) to authenticated;
+grant execute on function public.refund_credits(integer, text, text) to authenticated;

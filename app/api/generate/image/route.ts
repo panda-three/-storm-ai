@@ -16,7 +16,7 @@ export async function POST(request: Request) {
       model,
       prompt,
       size: String(body.ratio ?? "1:1"),
-      resolution: normalizeImageResolution(String(body.quality ?? "高清"), model),
+      resolution: normalizeImageResolution(String(body.quality ?? "2K"), model),
     })
 
     return NextResponse.json(result)

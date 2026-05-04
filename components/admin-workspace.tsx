@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import type { WorkspaceSection } from "@/app/page"
+import { imageModelOptions, imageModelSettings, videoModelOptions, videoModelSettings } from "@/lib/model-options"
 import type { AdminAccountSummary, CreditPackage, CustomerServiceSettings, ModelPricing, RedeemCode } from "@/lib/supabase"
 import { calculatePricingCredits, createRedeemCode, saveCreditPackage, saveCustomerServiceSettings, saveModelPricing } from "@/lib/supabase"
 import { AlertCircle, ArrowLeft, CheckCircle2, Coins, Loader2, Menu, QrCode, Save, ShieldCheck, SlidersHorizontal, Ticket } from "lucide-react"
@@ -40,6 +41,53 @@ const emptyPackageForm = {
   sort_order: 10,
 }
 
+function parseDurationSeconds(duration: string) {
+  const parsed = Number.parseInt(duration, 10)
+  return Number.isFinite(parsed) ? parsed : 8
+}
+
+function formatDurationOption(durationSeconds: number | null) {
+  return `${durationSeconds ?? 8} 秒`
+}
+
+function normalizeCurrency(value: number) {
+  return Math.round(value * 100) / 100
+}
+
+function getDefaultPricingForm(type: "image" | "video"): Omit<ModelPricing, "id"> & { id?: string } {
+  if (type === "video") {
+    const model = videoModelOptions[0]
+    const settings = videoModelSettings[model]
+
+    return {
+      aspect_ratio: settings.aspectRatios[0],
+      cost_cny: 1,
+      duration_seconds: parseDurationSeconds(settings.durations[0]),
+      enabled: true,
+      id: "",
+      markup: 2,
+      model,
+      quality: settings.qualities[0],
+      type,
+    }
+  }
+
+  const model = imageModelOptions[0]
+  const settings = imageModelSettings[model]
+
+  return {
+    aspect_ratio: null,
+    cost_cny: 1,
+    duration_seconds: null,
+    enabled: true,
+    id: "",
+    markup: 2,
+    model,
+    quality: settings.qualities[1],
+    type,
+  }
+}
+
 export function AdminWorkspace({
   canAccessAdmin,
   adminAccounts,
@@ -57,17 +105,7 @@ export function AdminWorkspace({
 }: AdminWorkspaceProps) {
   const [settingsForm, setSettingsForm] = useState(customerService)
   const [packageForm, setPackageForm] = useState<Omit<CreditPackage, "id"> & { id?: string }>(emptyPackageForm)
-  const [pricingForm, setPricingForm] = useState<Omit<ModelPricing, "id"> & { id?: string }>({
-    aspect_ratio: null,
-    cost_cny: 1,
-    duration_seconds: null,
-    enabled: true,
-    id: "",
-    markup: 2,
-    model: "Gemini Nano Banana Pro",
-    quality: "高清",
-    type: "image",
-  })
+  const [pricingForm, setPricingForm] = useState<Omit<ModelPricing, "id"> & { id?: string }>(() => getDefaultPricingForm("image"))
   const [redeemPackageId, setRedeemPackageId] = useState("")
   const [redeemCode, setRedeemCode] = useState("")
   const [redeemStatusFilter, setRedeemStatusFilter] = useState<"all" | RedeemCode["status"]>("all")
@@ -86,6 +124,12 @@ export function AdminWorkspace({
   const totalUserCredits = adminAccounts.reduce((sum, item) => sum + item.credit_balance, 0)
   const usedRedeemCount = redeemCodes.filter((item) => item.status === "used").length
   const enabledPricingCount = modelPricing.filter((item) => item.enabled).length
+  const pricingModelOptions = pricingForm.type === "image" ? imageModelOptions : videoModelOptions
+  const pricingImageSettings = pricingForm.type === "image" ? imageModelSettings[pricingForm.model] : null
+  const pricingVideoSettings = pricingForm.type === "video" ? videoModelSettings[pricingForm.model] : null
+  const pricingQualityOptions = pricingImageSettings?.qualities ?? pricingVideoSettings?.qualities ?? []
+  const pricingDurationOptions = pricingVideoSettings?.durations ?? []
+  const pricingAspectRatioOptions = pricingVideoSettings?.aspectRatios ?? []
 
   const handleSaveSettings = async () => {
     setSaving(true)
@@ -179,18 +223,24 @@ export function AdminWorkspace({
   }
 
   const handleSavePricing = async () => {
-    if (!pricingForm.model.trim()) {
-      setFeedback({ type: "error", message: "请输入模型名称。" })
+    if (!pricingModelOptions.includes(pricingForm.model)) {
+      setFeedback({ type: "error", message: "请选择有效模型。" })
       return
     }
 
-    if (!pricingForm.quality?.trim()) {
-      setFeedback({ type: "error", message: "请输入清晰度。" })
+    if (!pricingForm.quality || !pricingQualityOptions.includes(pricingForm.quality)) {
+      setFeedback({ type: "error", message: "请选择有效清晰度。" })
       return
     }
 
-    if (pricingForm.type === "video" && (!pricingForm.duration_seconds || !pricingForm.aspect_ratio)) {
-      setFeedback({ type: "error", message: "视频价格必须配置时长和比例。" })
+    if (
+      pricingForm.type === "video" &&
+      (!pricingForm.duration_seconds ||
+        !pricingDurationOptions.includes(formatDurationOption(pricingForm.duration_seconds)) ||
+        !pricingForm.aspect_ratio ||
+        !pricingAspectRatioOptions.includes(pricingForm.aspect_ratio))
+    ) {
+      setFeedback({ type: "error", message: "请选择有效视频时长和比例。" })
       return
     }
 
@@ -205,8 +255,9 @@ export function AdminWorkspace({
     try {
       await saveModelPricing({
         ...pricingForm,
-        model: pricingForm.model.trim(),
-        quality: pricingForm.quality?.trim() || null,
+        cost_cny: normalizeCurrency(pricingForm.cost_cny),
+        model: pricingForm.model,
+        quality: pricingForm.quality,
       })
       await onRefresh()
       setFeedback({ type: "success", message: "模型价格已保存。" })
@@ -419,12 +470,7 @@ export function AdminWorkspace({
                     <select
                       className="h-10 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition focus:border-indigo-300 focus:bg-white focus:ring-2 focus:ring-indigo-100"
                       onChange={(event) =>
-                        setPricingForm((current) => ({
-                          ...current,
-                          aspect_ratio: event.target.value === "image" ? null : "16:9",
-                          duration_seconds: event.target.value === "image" ? null : 8,
-                          type: event.target.value as "image" | "video",
-                        }))
+                        setPricingForm(getDefaultPricingForm(event.target.value as "image" | "video"))
                       }
                       value={pricingForm.type}
                     >
@@ -432,36 +478,62 @@ export function AdminWorkspace({
                       <option value="video">视频</option>
                     </select>
                   </label>
-                  <AdminInput
+                  <AdminSelect
                     label="模型名称"
-                    onChange={(value) => setPricingForm((current) => ({ ...current, model: value }))}
-                    placeholder="例如 Gemini Nano Banana Pro"
+                    onChange={(value) => {
+                      if (pricingForm.type === "image") {
+                        const settings = imageModelSettings[value]
+                        setPricingForm((current) => ({
+                          ...current,
+                          aspect_ratio: null,
+                          duration_seconds: null,
+                          model: value,
+                          quality: settings.qualities[1],
+                        }))
+                        return
+                      }
+
+                      const settings = videoModelSettings[value]
+                      setPricingForm((current) => ({
+                        ...current,
+                        aspect_ratio: settings.aspectRatios[0],
+                        duration_seconds: parseDurationSeconds(settings.durations[0]),
+                        model: value,
+                        quality: settings.qualities[0],
+                      }))
+                    }}
+                    options={pricingModelOptions}
                     value={pricingForm.model}
                   />
-                  <AdminInput
+                  <AdminSelect
                     label="清晰度"
                     onChange={(value) => setPricingForm((current) => ({ ...current, quality: value }))}
-                    placeholder="例如 高清 / 720p"
+                    options={pricingQualityOptions}
                     value={pricingForm.quality ?? ""}
                   />
                   {pricingForm.type === "video" && (
                     <>
-                      <AdminNumberInput
+                      <AdminSelect
                         label="时长（秒）"
-                        onChange={(value) => setPricingForm((current) => ({ ...current, duration_seconds: Math.round(value) }))}
-                        value={pricingForm.duration_seconds ?? 8}
+                        onChange={(value) =>
+                          setPricingForm((current) => ({ ...current, duration_seconds: parseDurationSeconds(value) }))
+                        }
+                        options={pricingDurationOptions}
+                        value={formatDurationOption(pricingForm.duration_seconds)}
                       />
-                      <AdminInput
+                      <AdminSelect
                         label="比例"
                         onChange={(value) => setPricingForm((current) => ({ ...current, aspect_ratio: value }))}
-                        placeholder="例如 16:9"
+                        options={pricingAspectRatioOptions}
                         value={pricingForm.aspect_ratio ?? ""}
                       />
                     </>
                   )}
                   <AdminNumberInput
                     label="实际成本（元）"
+                    onBlur={() => setPricingForm((current) => ({ ...current, cost_cny: normalizeCurrency(current.cost_cny) }))}
                     onChange={(value) => setPricingForm((current) => ({ ...current, cost_cny: value }))}
+                    step="0.01"
                     value={pricingForm.cost_cny}
                   />
                   <AdminNumberInput
@@ -498,7 +570,7 @@ export function AdminWorkspace({
                               {item.aspect_ratio ? ` · ${item.aspect_ratio}` : ""}
                             </div>
                             <div className="mt-1 text-xs text-slate-400">
-                              成本 {item.cost_cny.toFixed(4)} 元 · 倍率 {item.markup} · 扣 {calculatePricingCredits(item)} 点
+                              成本 {item.cost_cny.toFixed(2)} 元 · 倍率 {item.markup} · 扣 {calculatePricingCredits(item)} 点
                             </div>
                           </div>
                           <div className="flex gap-2">
@@ -696,6 +768,35 @@ function AdminInput({
   )
 }
 
+function AdminSelect({
+  label,
+  onChange,
+  options,
+  value,
+}: {
+  label: string
+  onChange: (value: string) => void
+  options: string[]
+  value: string
+}) {
+  return (
+    <label className="grid gap-1">
+      <span className="text-sm font-medium text-slate-700">{label}</span>
+      <select
+        className="h-10 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition focus:border-indigo-300 focus:bg-white focus:ring-2 focus:ring-indigo-100"
+        onChange={(event) => onChange(event.target.value)}
+        value={value}
+      >
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
 function AdminMetricCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg border border-slate-200 bg-white p-4">
@@ -707,11 +808,15 @@ function AdminMetricCard({ label, value }: { label: string; value: string }) {
 
 function AdminNumberInput({
   label,
+  onBlur,
   onChange,
+  step = "1",
   value,
 }: {
   label: string
+  onBlur?: () => void
   onChange: (value: number) => void
+  step?: string
   value: number
 }) {
   return (
@@ -720,7 +825,9 @@ function AdminNumberInput({
       <input
         className="h-10 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition focus:border-indigo-300 focus:bg-white focus:ring-2 focus:ring-indigo-100"
         min="0"
+        onBlur={onBlur}
         onChange={(event) => onChange(Number(event.target.value))}
+        step={step}
         type="number"
         value={value}
       />

@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import type { User } from "@supabase/supabase-js"
+import type { SupabaseClient, User } from "@supabase/supabase-js"
 import { AuthPanel } from "@/components/auth-panel"
 import { Sidebar } from "@/components/sidebar"
 import { ChatArea, type ProjectItem } from "@/components/chat-area"
@@ -26,6 +26,28 @@ import {
   saveSupabaseAccount,
 } from "@/lib/supabase"
 
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message) return error.message
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = (error as { message?: unknown }).message
+    if (typeof message === "string" && message) return message
+  }
+  return fallback
+}
+
+function isInvalidRefreshTokenError(error: unknown) {
+  const message = getErrorMessage(error, "")
+  return message.includes("Invalid Refresh Token") || message.includes("Refresh Token Not Found")
+}
+
+async function clearLocalSupabaseSession(supabase: SupabaseClient) {
+  try {
+    await supabase.auth.signOut({ scope: "local" })
+  } catch {
+    // Ignore cleanup failures; the next login will overwrite the local auth state.
+  }
+}
+
 export type WorkspaceSection = "image" | "video" | "history" | "credits" | "admin"
 
 export default function Home() {
@@ -46,6 +68,7 @@ export default function Home() {
   const [activeSection, setActiveSection] = useState<WorkspaceSection>("image")
 
   useEffect(() => {
+    let active = true
     const supabase = getSupabaseClient()
 
     if (!supabase) {
@@ -53,8 +76,41 @@ export default function Home() {
       return
     }
 
-    supabase.auth.getSession().then(({ data }) => {
+    supabase.auth.getSession().then(async ({ data, error }) => {
+      if (!active) return
+
+      if (error) {
+        if (isInvalidRefreshTokenError(error)) {
+          await clearLocalSupabaseSession(supabase)
+          if (!active) return
+
+          setUser(null)
+          setAuthReady(true)
+          return
+        }
+
+        setSyncError(getErrorMessage(error, "加载登录状态失败。"))
+        setUser(null)
+        setAuthReady(true)
+        return
+      }
+
       setUser(data.session?.user ?? null)
+      setAuthReady(true)
+    }).catch(async (error) => {
+      if (!active) return
+
+      if (isInvalidRefreshTokenError(error)) {
+        await clearLocalSupabaseSession(supabase)
+        if (!active) return
+
+        setUser(null)
+        setAuthReady(true)
+        return
+      }
+
+      setSyncError(getErrorMessage(error, "加载登录状态失败。"))
+      setUser(null)
       setAuthReady(true)
     })
 
@@ -63,7 +119,10 @@ export default function Home() {
       setAuthReady(true)
     })
 
-    return () => data.subscription.unsubscribe()
+    return () => {
+      active = false
+      data.subscription.unsubscribe()
+    }
   }, [])
 
   useEffect(() => {
@@ -86,7 +145,7 @@ export default function Home() {
           userId: user.id,
         })
       } catch (error) {
-        setSyncError(error instanceof Error ? error.message : "加载 Supabase 数据失败。")
+        setSyncError(getErrorMessage(error, "加载 Supabase 数据失败。"))
       }
     }
 
@@ -112,7 +171,7 @@ export default function Home() {
         userId: user.id,
       })
     } catch (error) {
-      setSyncError(error instanceof Error ? error.message : "刷新 Supabase 数据失败。")
+      setSyncError(getErrorMessage(error, "刷新 Supabase 数据失败。"))
     }
   }
 
@@ -135,7 +194,7 @@ export default function Home() {
         setAdminAccounts(accounts)
       }
     } catch (error) {
-      setSyncError(error instanceof Error ? error.message : "加载充值配置失败。")
+      setSyncError(getErrorMessage(error, "加载充值配置失败。"))
     }
   }, [account.role, user])
 
@@ -148,7 +207,7 @@ export default function Home() {
 
     const timer = window.setTimeout(() => {
       saveSupabaseAccount(account).catch((error) => {
-        setSyncError(error instanceof Error ? error.message : "保存 Supabase 数据失败。")
+        setSyncError(getErrorMessage(error, "保存 Supabase 数据失败。"))
       })
     }, 400)
 
@@ -178,7 +237,14 @@ export default function Home() {
 
   const handleSignOut = async () => {
     const supabase = getSupabaseClient()
-    await supabase?.auth.signOut()
+    if (supabase) {
+      const { error } = await supabase.auth.signOut()
+      if (error && isInvalidRefreshTokenError(error)) {
+        await clearLocalSupabaseSession(supabase)
+      } else if (error) {
+        setSyncError(getErrorMessage(error, "退出登录失败。"))
+      }
+    }
     setUser(null)
     setAccount(createDefaultAccount())
   }

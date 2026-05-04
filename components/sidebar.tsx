@@ -97,7 +97,7 @@ export function Sidebar({
             <Sparkles className="h-4 w-4 text-white" />
           </div>
           <div>
-            <div className="font-semibold leading-none">风暴 AI</div>
+            <div className="font-semibold leading-none">季风 AI</div>
             <div className="mt-1 text-xs text-slate-500">图像与视频生成工作台</div>
           </div>
         </div>

@@ -3,7 +3,7 @@ import { Analytics } from '@vercel/analytics/next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: '风暴AI 工作空间',
+  title: '季风AI 工作空间',
   description: '设计师必备的AI设计工具',
   generator: 'v0.app',
   icons: {

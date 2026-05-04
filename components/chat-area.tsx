@@ -1,9 +1,10 @@
 "use client"
 
-import { useState } from "react"
+import { useRef, useState } from "react"
 import type { WorkspaceSection } from "@/app/page"
 import type { CreditPackage, CustomerServiceSettings, ModelPricing } from "@/lib/supabase"
 import { calculatePricingCredits, redeemCreditCode, refundCredits, spendCredits } from "@/lib/supabase"
+import { imageModelOptions, imageModelSettings, videoModelOptions, videoModelSettings } from "@/lib/model-options"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -78,50 +79,6 @@ const sectionMeta: Record<
   },
 }
 
-const imageModelOptions = ["Gemini Nano Banana Pro", "GPT-Image-2"]
-const imageModelSettings: Record<
-  string,
-  {
-    qualities: string[]
-    ratios: string[]
-  }
-> = {
-  "Gemini Nano Banana Pro": {
-    qualities: ["标清", "高清", "超清"],
-    ratios: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"],
-  },
-  "GPT-Image-2": {
-    qualities: ["标清", "高清", "超清"],
-    ratios: ["1:1", "2:3", "3:2"],
-  },
-}
-const videoModelOptions = ["Gemini Veo 3.1 Fast", "Gemini Veo 3.1 Quality", "Grok Imagine Video"]
-
-const videoModelSettings: Record<
-  string,
-  {
-    aspectRatios: string[]
-    durations: string[]
-    qualities: string[]
-  }
-> = {
-  "Gemini Veo 3.1 Fast": {
-    aspectRatios: ["16:9", "9:16"],
-    durations: ["8 秒"],
-    qualities: ["720p", "1080p"],
-  },
-  "Gemini Veo 3.1 Quality": {
-    aspectRatios: ["16:9", "9:16"],
-    durations: ["8 秒"],
-    qualities: ["720p", "1080p"],
-  },
-  "Grok Imagine Video": {
-    aspectRatios: ["16:9", "9:16", "1:1", "3:2", "2:3"],
-    durations: ["6 秒", "10 秒", "15 秒", "30 秒"],
-    qualities: ["720p"],
-  },
-}
-
 function getAssetExtension(url: string, fallback: string) {
   const pathname = new URL(url, window.location.href).pathname
   const extension = pathname.split(".").pop()?.toLowerCase()
@@ -164,6 +121,25 @@ function parseDurationSeconds(duration?: string) {
   if (!duration) return null
   const parsed = Number.parseInt(duration, 10)
   return Number.isFinite(parsed) ? parsed : null
+}
+
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message) return error.message
+
+  if (typeof error === "object" && error !== null) {
+    const details = ["error", "message", "details", "hint", "code"]
+      .map((key) => {
+        const value = (error as Record<string, unknown>)[key]
+        return typeof value === "string" && value ? value : ""
+      })
+      .filter(Boolean)
+
+    if (details.length > 0) return details.join(" ")
+  }
+
+  if (typeof error === "string" && error) return error
+
+  return fallback
 }
 
 function findModelPricing(
@@ -304,7 +280,7 @@ const seedHistoryItems: ProjectItem[] = [
     time: "今天 11:20",
     model: "商业海报 V1",
     palette: "from-indigo-500 via-sky-400 to-emerald-300",
-    previewLabel: "高清 · 16:9",
+    previewLabel: "2K · 16:9",
     prompt: "赛博城市夜景，霓虹灯，未来商业海报",
   },
   {
@@ -326,7 +302,7 @@ const seedHistoryItems: ProjectItem[] = [
     time: "昨天 18:05",
     model: "国风插画 V1",
     palette: "from-amber-300 via-orange-400 to-rose-400",
-    previewLabel: "超清 · 3:4",
+    previewLabel: "4K · 3:4",
     prompt: "国风侠客角色设定，长袍，水墨背景",
   },
 ]
@@ -487,6 +463,7 @@ function ImageWorkspace({
   const [isGenerating, setIsGenerating] = useState(false)
   const [error, setError] = useState("")
   const [result, setResult] = useState<ImageResult | null>(null)
+  const promptRef = useRef<HTMLTextAreaElement>(null)
   const currentPricing = findModelPricing(modelPricing, {
     model,
     quality,
@@ -494,12 +471,20 @@ function ImageWorkspace({
   })
   const estimatedCredits = currentPricing ? calculatePricingCredits(currentPricing) : null
 
+  const handlePromptChange = (value: string) => {
+    setPrompt(value)
+    if (error === "请先输入生图提示词。" && value.trim()) {
+      setError("")
+    }
+  }
+
   const handleGenerate = async () => {
     const trimmedPrompt = prompt.trim()
 
     if (!trimmedPrompt) {
       setError("请先输入生图提示词。")
       setResult(null)
+      window.requestAnimationFrame(() => promptRef.current?.focus())
       return
     }
 
@@ -522,11 +507,15 @@ function ImageWorkspace({
     let billed = false
 
     try {
-      await spendCredits({
-        amount: estimatedCredits,
-        reason: billingReason,
-        reference: billingReference,
-      })
+      try {
+        await spendCredits({
+          amount: estimatedCredits,
+          reason: billingReason,
+          reference: billingReference,
+        })
+      } catch (error) {
+        throw new Error(`扣点失败：${getErrorMessage(error, "请稍后重试。")}`, { cause: error })
+      }
       billed = true
       await onAccountRefresh()
 
@@ -541,11 +530,13 @@ function ImageWorkspace({
           quality,
           ratio,
         }),
+      }).catch((error) => {
+        throw new Error(`生图接口请求失败：${getErrorMessage(error, "请检查本地服务或网络连接。")}`)
       })
-      const data = await response.json()
+      const data = await response.json().catch(() => ({}))
 
       if (!response.ok || !data.ok) {
-        throw new Error(data.error ?? "生图任务提交失败。")
+        throw new Error(getErrorMessage(data, "生图任务提交失败。"))
       }
 
       const generatedResult: ImageResult = {
@@ -600,7 +591,7 @@ function ImageWorkspace({
             })
               .then(onAccountRefresh)
               .catch((error) => {
-                setError(error instanceof Error ? error.message : "任务失败，但自动退款失败，请联系管理员。")
+                setError(getErrorMessage(error, "任务失败，但自动退款失败，请联系管理员。"))
               })
           }
         },
@@ -612,7 +603,7 @@ function ImageWorkspace({
         })
           .then(onAccountRefresh)
           .catch(() => undefined)
-        setError(error instanceof Error ? error.message : "任务状态查询失败。")
+        setError(getErrorMessage(error, "任务状态查询失败。"))
       })
     } catch (error) {
       if (billed) {
@@ -623,7 +614,7 @@ function ImageWorkspace({
         }).catch(() => undefined)
         await onAccountRefresh()
       }
-      setError(error instanceof Error ? error.message : "生图任务提交失败。")
+      setError(getErrorMessage(error, "生图任务提交失败。"))
     } finally {
       setIsGenerating(false)
     }
@@ -643,9 +634,15 @@ function ImageWorkspace({
             </Badge>
           </div>
           <textarea
+            ref={promptRef}
             value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            className="mt-4 min-h-36 w-full resize-none rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm outline-none transition focus:border-indigo-300 focus:bg-white focus:ring-2 focus:ring-indigo-100"
+            aria-invalid={error === "请先输入生图提示词。"}
+            onChange={(event) => handlePromptChange(event.target.value)}
+            className={`mt-4 min-h-36 w-full resize-none rounded-lg border bg-slate-50 p-4 text-sm outline-none transition focus:bg-white focus:ring-2 ${
+              error === "请先输入生图提示词。"
+                ? "border-rose-300 focus:border-rose-300 focus:ring-rose-100"
+                : "border-slate-200 focus:border-indigo-300 focus:ring-indigo-100"
+            }`}
             placeholder="描述你想生成的画面，例如：未来感 AI 工作室，玻璃墙面，柔和灯光，产品级渲染..."
           />
           <div className="mt-4 grid gap-4 lg:grid-cols-3">
@@ -686,7 +683,7 @@ function ImageWorkspace({
           </div>
         </div>
 
-        <ImageResultPanel isGenerating={isGenerating} result={result} />
+        <ImageResultPanel isGenerating={isGenerating} onRegenerate={handleGenerate} result={result} />
       </section>
       <QuickEntryGrid onSectionChange={onSectionChange} />
     </>
@@ -717,6 +714,7 @@ function VideoWorkspace({
   const [isGenerating, setIsGenerating] = useState(false)
   const [error, setError] = useState("")
   const [result, setResult] = useState<VideoResult | null>(null)
+  const promptRef = useRef<HTMLTextAreaElement>(null)
   const currentPricing = findModelPricing(modelPricing, {
     aspectRatio,
     duration,
@@ -726,12 +724,20 @@ function VideoWorkspace({
   })
   const estimatedCredits = currentPricing ? calculatePricingCredits(currentPricing) : null
 
+  const handlePromptChange = (value: string) => {
+    setPrompt(value)
+    if (error === "请先输入视频提示词。" && value.trim()) {
+      setError("")
+    }
+  }
+
   const handleGenerate = async () => {
     const trimmedPrompt = prompt.trim()
 
     if (!trimmedPrompt) {
       setError("请先输入视频提示词。")
       setResult(null)
+      window.requestAnimationFrame(() => promptRef.current?.focus())
       return
     }
 
@@ -754,11 +760,15 @@ function VideoWorkspace({
     let billed = false
 
     try {
-      await spendCredits({
-        amount: estimatedCredits,
-        reason: billingReason,
-        reference: billingReference,
-      })
+      try {
+        await spendCredits({
+          amount: estimatedCredits,
+          reason: billingReason,
+          reference: billingReference,
+        })
+      } catch (error) {
+        throw new Error(`扣点失败：${getErrorMessage(error, "请稍后重试。")}`, { cause: error })
+      }
       billed = true
       await onAccountRefresh()
 
@@ -774,11 +784,13 @@ function VideoWorkspace({
           quality,
           aspectRatio,
         }),
+      }).catch((error) => {
+        throw new Error(`视频接口请求失败：${getErrorMessage(error, "请检查本地服务或网络连接。")}`)
       })
-      const data = await response.json()
+      const data = await response.json().catch(() => ({}))
 
       if (!response.ok || !data.ok) {
-        throw new Error(data.error ?? "视频任务提交失败。")
+        throw new Error(getErrorMessage(data, "视频任务提交失败。"))
       }
 
       const generatedResult: VideoResult = {
@@ -836,7 +848,7 @@ function VideoWorkspace({
             })
               .then(onAccountRefresh)
               .catch((error) => {
-                setError(error instanceof Error ? error.message : "任务失败，但自动退款失败，请联系管理员。")
+                setError(getErrorMessage(error, "任务失败，但自动退款失败，请联系管理员。"))
               })
           }
         },
@@ -848,7 +860,7 @@ function VideoWorkspace({
         })
           .then(onAccountRefresh)
           .catch(() => undefined)
-        setError(error instanceof Error ? error.message : "任务状态查询失败。")
+        setError(getErrorMessage(error, "任务状态查询失败。"))
       })
     } catch (error) {
       if (billed) {
@@ -859,7 +871,7 @@ function VideoWorkspace({
         }).catch(() => undefined)
         await onAccountRefresh()
       }
-      setError(error instanceof Error ? error.message : "视频任务提交失败。")
+      setError(getErrorMessage(error, "视频任务提交失败。"))
     } finally {
       setIsGenerating(false)
     }
@@ -879,9 +891,15 @@ function VideoWorkspace({
             </Badge>
           </div>
           <textarea
+            ref={promptRef}
             value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            className="mt-4 min-h-36 w-full resize-none rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm outline-none transition focus:border-indigo-300 focus:bg-white focus:ring-2 focus:ring-indigo-100"
+            aria-invalid={error === "请先输入视频提示词。"}
+            onChange={(event) => handlePromptChange(event.target.value)}
+            className={`mt-4 min-h-36 w-full resize-none rounded-lg border bg-slate-50 p-4 text-sm outline-none transition focus:bg-white focus:ring-2 ${
+              error === "请先输入视频提示词。"
+                ? "border-rose-300 focus:border-rose-300 focus:ring-rose-100"
+                : "border-slate-200 focus:border-indigo-300 focus:ring-indigo-100"
+            }`}
             placeholder="描述你想生成的视频，例如：科技产品在黑色展台缓慢旋转，镜头推进，背景有流动光线..."
           />
           <div className="mt-4 grid gap-4 lg:grid-cols-3">
@@ -924,7 +942,7 @@ function VideoWorkspace({
           </div>
         </div>
 
-        <VideoResultPanel isGenerating={isGenerating} result={result} />
+        <VideoResultPanel isGenerating={isGenerating} onRegenerate={handleGenerate} result={result} />
       </section>
       <QuickEntryGrid onSectionChange={onSectionChange} />
     </>
@@ -1441,9 +1459,11 @@ function OptionGroup({
 
 function ImageResultPanel({
   isGenerating,
+  onRegenerate,
   result,
 }: {
   isGenerating: boolean
+  onRegenerate: () => void
   result: ImageResult | null
 }) {
   const handleDownload = () => {
@@ -1490,24 +1510,24 @@ function ImageResultPanel({
         ) : (
           <div className={`aspect-square bg-gradient-to-br ${result.palette}`} />
         )}
-        <div className="flex items-center justify-between gap-2 p-3">
+        <div className="p-3">
           <div className="min-w-0">
             <div className="truncate text-sm font-medium">{result.prompt}</div>
             <div className="truncate text-xs text-slate-500">
               {result.quality} · {result.ratio}
             </div>
           </div>
-          <Button
-            aria-label="下载图片"
-            className="h-8 w-8"
-            disabled={!result.imageUrl}
-            onClick={handleDownload}
-            size="icon"
-            variant="ghost"
-          >
-            <Download className="h-4 w-4" />
-          </Button>
         </div>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <Button disabled={!result.imageUrl} onClick={handleDownload} variant="outline">
+          <Download className="h-4 w-4" />
+          下载结果
+        </Button>
+        <Button disabled={isGenerating} onClick={onRegenerate} variant="outline">
+          <RotateCcw className="h-4 w-4" />
+          重新生成
+        </Button>
       </div>
       <div className="mt-4 rounded-lg bg-slate-50 p-3 text-xs text-slate-500">
         <div className="font-medium text-slate-700">生成参数</div>
@@ -1522,9 +1542,11 @@ function ImageResultPanel({
 
 function VideoResultPanel({
   isGenerating,
+  onRegenerate,
   result,
 }: {
   isGenerating: boolean
+  onRegenerate: () => void
   result: VideoResult | null
 }) {
   const handleDownload = () => {
@@ -1594,18 +1616,18 @@ function VideoResultPanel({
                 {result.duration} · {result.quality} · {result.aspectRatio}
               </div>
             </div>
-            <Button
-              aria-label="下载视频"
-              className="h-8 w-8 text-white hover:bg-white/10"
-              disabled={!result.videoUrl}
-              onClick={handleDownload}
-              size="icon"
-              variant="ghost"
-            >
-              <Download className="h-4 w-4" />
-            </Button>
           </div>
         </div>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <Button disabled={!result.videoUrl} onClick={handleDownload} variant="outline">
+          <Download className="h-4 w-4" />
+          下载结果
+        </Button>
+        <Button disabled={isGenerating} onClick={onRegenerate} variant="outline">
+          <RotateCcw className="h-4 w-4" />
+          重新生成
+        </Button>
       </div>
       <div className="mt-4 rounded-lg bg-slate-50 p-3 text-xs text-slate-500">
         <div className="font-medium text-slate-700">生成参数</div>

@@ -43,7 +43,7 @@ export function WelcomeScreen() {
           <Sparkles className="h-8 w-8 text-white" />
         </div>
         <div className="text-center">
-          <h1 className="text-3xl font-bold text-foreground mb-2">风暴AI 工作空间</h1>
+          <h1 className="text-3xl font-bold text-foreground mb-2">季风AI 工作空间</h1>
           <p className="text-muted-foreground text-lg">设计师必备的AI设计工具</p>
         </div>
       </div>

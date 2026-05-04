@@ -62,7 +62,13 @@ export const videoModelMap: Record<string, string> = {
 }
 
 export function normalizeImageResolution(quality: string, model: string) {
-  const value = quality === "超清" ? "4K" : quality === "高清" ? "2K" : "1K"
+  const upperQuality = quality.trim().toUpperCase()
+  const value =
+    upperQuality === "4K" || quality === "超清"
+      ? "4K"
+      : upperQuality === "2K" || quality === "高清"
+        ? "2K"
+        : "1K"
 
   if (model === "GPT-Image-2" || model === "gpt-image-2-official") {
     return value.toLowerCase()

@@ -76,7 +76,7 @@ export function AuthPanel({ onAuthed }: AuthPanelProps) {
             <Sparkles className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-lg font-semibold">风暴 AI</h1>
+            <h1 className="text-lg font-semibold">季风 AI</h1>
             <p className="mt-1 text-sm text-slate-500">登录后同步历史项目和点数。</p>
           </div>
         </div>
