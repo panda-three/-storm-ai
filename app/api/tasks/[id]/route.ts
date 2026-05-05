@@ -13,6 +13,13 @@ export async function GET(
     }
 
     const result = await getTaskStatus(id)
+    console.log("[Task Status] normalized", {
+      imageCount: result.imageUrls.length,
+      progress: result.progress,
+      status: result.status,
+      taskId: result.taskId,
+      videoCount: result.videoUrl ? 1 : 0,
+    })
 
     return NextResponse.json(result)
   } catch (error) {

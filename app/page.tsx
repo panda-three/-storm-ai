@@ -221,26 +221,26 @@ export default function Home() {
     return () => window.clearTimeout(timer)
   }, [account, user])
 
-  const addProject = (project: ProjectItem) => {
+  const addProject = useCallback((project: ProjectItem) => {
     setAccount((current) => ({
       ...current,
       projects: [project, ...current.projects.filter((item) => item.id !== project.id)],
     }))
-  }
+  }, [])
 
-  const updateProject = (project: ProjectItem) => {
+  const updateProject = useCallback((project: ProjectItem) => {
     setAccount((current) => ({
       ...current,
       projects: current.projects.map((item) => (item.id === project.id ? { ...item, ...project } : item)),
     }))
-  }
+  }, [])
 
-  const deleteProject = (id: string) => {
+  const deleteProject = useCallback((id: string) => {
     setAccount((current) => ({
       ...current,
       projects: current.projects.filter((item) => item.id !== id),
     }))
-  }
+  }, [])
 
   const handleSignOut = async () => {
     const supabase = getSupabaseClient()

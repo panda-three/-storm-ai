@@ -294,6 +294,43 @@ interface TaskStatusResponse {
   taskError?: string
 }
 
+function resolveImageTaskProject(task: TaskStatusResponse, fallbackUrl = "") {
+  const imageUrls = task.imageUrls ?? []
+  const previewUrl = imageUrls[0] ?? fallbackUrl
+  const status =
+    task.status === "failed" || (task.status === "completed" && imageUrls.length === 0)
+      ? "失败"
+      : task.status === "completed"
+        ? "已完成"
+        : "生成中"
+  const taskError =
+    task.taskError || (task.status === "completed" && imageUrls.length === 0 ? "任务已完成，但接口没有返回图片地址。" : "")
+
+  return {
+    previewUrl,
+    status,
+    taskError,
+  }
+}
+
+function resolveVideoTaskProject(task: TaskStatusResponse, fallbackUrl = "") {
+  const previewUrl = task.videoUrl || fallbackUrl
+  const status =
+    task.status === "failed" || (task.status === "completed" && !task.videoUrl)
+      ? "失败"
+      : task.status === "completed"
+        ? "已完成"
+        : "生成中"
+  const taskError =
+    task.taskError || (task.status === "completed" && !task.videoUrl ? "任务已完成，但接口没有返回视频地址。" : "")
+
+  return {
+    previewUrl,
+    status,
+    taskError,
+  }
+}
+
 const seedHistoryItems: ProjectItem[] = [
   {
     id: "seed-image-1",
@@ -350,6 +387,66 @@ export function ChatArea({
   userId,
 }: ChatAreaProps) {
   const meta = sectionMeta[activeSection]
+
+  useEffect(() => {
+    const pendingProjects = projects.filter((project) => project.status === "生成中" && project.taskId)
+    let active = true
+    const timers: number[] = []
+
+    pendingProjects.forEach((project) => {
+      let attempts = 0
+
+      const reconcile = () => {
+        attempts += 1
+        fetch(`/api/tasks/${encodeURIComponent(project.taskId ?? "")}`)
+          .then(async (response) => {
+            const task = (await response.json()) as TaskStatusResponse
+
+            if (!response.ok || !task.ok) {
+              throw new Error(task.error ?? "任务状态查询失败。")
+            }
+
+            if (!active) return
+
+            const resolved =
+              project.type === "视频"
+                ? resolveVideoTaskProject(task, project.previewUrl)
+                : resolveImageTaskProject(task, project.previewUrl)
+
+            if (resolved.status === "生成中") {
+              if (attempts < 60) {
+                timers.push(window.setTimeout(reconcile, 5000))
+              }
+              return
+            }
+
+            onProjectUpdate({
+              ...project,
+              status: resolved.status,
+              previewUrl: resolved.previewUrl,
+              taskError: resolved.taskError,
+            })
+          })
+          .catch((error) => {
+            console.warn("[Task Reconcile] failed", {
+              error: getErrorMessage(error, "任务状态查询失败。"),
+              taskId: project.taskId,
+            })
+
+            if (active && attempts < 60) {
+              timers.push(window.setTimeout(reconcile, 5000))
+            }
+          })
+      }
+
+      reconcile()
+    })
+
+    return () => {
+      active = false
+      timers.forEach((timer) => window.clearTimeout(timer))
+    }
+  }, [onProjectUpdate, projects])
 
   const handleImageGenerated = (result: ImageResult) => {
     onProjectAdd({
@@ -664,21 +761,12 @@ function ImageWorkspace({
       pollTask({
         taskId: data.taskId,
         onUpdate: (task) => {
-          const imageUrls = task.imageUrls ?? []
-          const status =
-            task.status === "failed" || (task.status === "completed" && imageUrls.length === 0)
-              ? "失败"
-              : task.status === "completed"
-                ? "已完成"
-                : "生成中"
-          const taskError =
-            task.taskError ||
-            (task.status === "completed" && imageUrls.length === 0 ? "任务已完成，但接口没有返回图片地址。" : "")
+          const resolved = resolveImageTaskProject(task, generatedResult.imageUrl)
           const nextResult: ImageResult = {
             ...generatedResult,
-            status,
+            status: resolved.status,
             progress: task.progress ?? generatedResult.progress,
-            imageUrl: imageUrls[0] ?? generatedResult.imageUrl,
+            imageUrl: resolved.previewUrl,
           }
 
           setResult(nextResult)
@@ -694,10 +782,10 @@ function ImageWorkspace({
             previewLabel: `${nextResult.quality} · ${nextResult.ratio}`,
             previewUrl: nextResult.imageUrl,
             taskId: nextResult.taskId,
-            taskError,
+            taskError: resolved.taskError,
           })
 
-          if (status === "失败") {
+          if (resolved.status === "失败") {
             refundCredits({
               amount: estimatedCredits,
               reason: `${billingReason}失败退款`,
@@ -1054,20 +1142,13 @@ function VideoWorkspace({
       pollTask({
         taskId: data.taskId,
         onUpdate: (task) => {
-          const status =
-            task.status === "failed" || (task.status === "completed" && !task.videoUrl)
-              ? "失败"
-              : task.status === "completed"
-                ? "已完成"
-                : "生成中"
-          const taskError =
-            task.taskError || (task.status === "completed" && !task.videoUrl ? "任务已完成，但接口没有返回视频地址。" : "")
+          const resolved = resolveVideoTaskProject(task, generatedResult.videoUrl)
           const nextResult: VideoResult = {
             ...generatedResult,
-            status,
+            status: resolved.status,
             progress: task.progress ?? generatedResult.progress,
-            taskError,
-            videoUrl: task.videoUrl ?? "",
+            taskError: resolved.taskError,
+            videoUrl: resolved.previewUrl,
           }
 
           setResult(nextResult)
@@ -1086,7 +1167,7 @@ function VideoWorkspace({
             taskError: nextResult.taskError,
           })
 
-          if (status === "失败") {
+          if (resolved.status === "失败") {
             refundCredits({
               amount: estimatedCredits,
               reason: `${billingReason}失败退款`,
