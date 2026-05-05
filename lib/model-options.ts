@@ -13,7 +13,7 @@ export const imageModelSettings: Record<
   },
   "GPT-Image-2": {
     qualities: ["1K", "2K", "4K"],
-    ratios: ["1:1", "2:3", "3:2"],
+    ratios: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "2:1", "1:2", "21:9", "9:21"],
   },
 }
 
@@ -30,16 +30,16 @@ export const videoModelSettings: Record<
   "Gemini Veo 3.1 Fast": {
     aspectRatios: ["16:9", "9:16"],
     durations: ["8 秒"],
-    qualities: ["720p", "1080p"],
+    qualities: ["480P", "720P"],
   },
   "Gemini Veo 3.1 Quality": {
     aspectRatios: ["16:9", "9:16"],
     durations: ["8 秒"],
-    qualities: ["720p", "1080p"],
+    qualities: ["480P", "720P"],
   },
   "Grok Imagine Video": {
     aspectRatios: ["16:9", "9:16", "1:1", "3:2", "2:3"],
     durations: ["6 秒", "10 秒", "15 秒", "30 秒"],
-    qualities: ["720p"],
+    qualities: ["480P", "720P"],
   },
 }

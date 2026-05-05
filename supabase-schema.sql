@@ -1,6 +1,7 @@
 create table if not exists public.user_accounts (
   user_id uuid primary key references auth.users(id) on delete cascade,
-  credit_balance integer not null default 2680,
+  username text,
+  credit_balance integer not null default 0,
   projects jsonb not null default '[]'::jsonb,
   ledger jsonb not null default '[]'::jsonb,
   redeemed_codes jsonb not null default '[]'::jsonb,
@@ -10,8 +11,14 @@ create table if not exists public.user_accounts (
 );
 
 alter table public.user_accounts add column if not exists role text not null default 'user';
+alter table public.user_accounts add column if not exists username text;
+alter table public.user_accounts alter column credit_balance set default 0;
 alter table public.user_accounts drop constraint if exists user_accounts_role_check;
 alter table public.user_accounts add constraint user_accounts_role_check check (role in ('user', 'admin')) not valid;
+alter table public.user_accounts drop constraint if exists user_accounts_username_format_check;
+alter table public.user_accounts add constraint user_accounts_username_format_check check (username is null or username ~ '^[A-Za-z0-9_]{3,24}$') not valid;
+
+create unique index if not exists user_accounts_username_unique_idx on public.user_accounts (lower(username)) where username is not null;
 
 create or replace function public.is_admin()
 returns boolean
@@ -27,6 +34,49 @@ as $$
       and role = 'admin'
   );
 $$;
+
+create or replace function public.is_username_available(p_username text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select trim(coalesce(p_username, '')) ~ '^[A-Za-z0-9_]{3,24}$'
+    and not exists (
+      select 1
+      from public.user_accounts
+      where lower(username) = lower(trim(p_username))
+    );
+$$;
+
+create or replace function public.create_account_for_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_username text := trim(coalesce(new.raw_user_meta_data->>'username', ''));
+begin
+  if v_username !~ '^[A-Za-z0-9_]{3,24}$' then
+    raise exception '用户名需为 3-24 位字母、数字或下划线。';
+  end if;
+
+  insert into public.user_accounts (user_id, username, credit_balance)
+  values (new.id, v_username, 0);
+
+  return new;
+exception
+  when unique_violation then
+    raise exception '该用户名已被使用，请换一个。';
+end;
+$$;
+
+drop trigger if exists create_account_for_new_user on auth.users;
+create trigger create_account_for_new_user
+after insert on auth.users
+for each row execute function public.create_account_for_new_user();
 
 create table if not exists public.credit_packages (
   id uuid primary key default gen_random_uuid(),
@@ -434,6 +484,7 @@ end;
 $$;
 
 grant execute on function public.redeem_credit_code(text) to authenticated;
+grant execute on function public.is_username_available(text) to anon, authenticated;
 grant execute on function public.save_user_projects(jsonb) to authenticated;
 grant execute on function public.spend_credits(integer, text, text) to authenticated;
 grant execute on function public.refund_credits(integer, text, text) to authenticated;

@@ -13,6 +13,7 @@ type AuthMode = "login" | "register"
 
 export function AuthPanel({ onAuthed }: AuthPanelProps) {
   const [mode, setMode] = useState<AuthMode>("login")
+  const [username, setUsername] = useState("")
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [error, setError] = useState("")
@@ -22,6 +23,7 @@ export function AuthPanel({ onAuthed }: AuthPanelProps) {
 
   const handleSubmit = async () => {
     const supabase = getSupabaseClient()
+    const normalizedUsername = username.trim()
     const normalizedEmail = email.trim()
 
     if (!supabase) {
@@ -34,15 +36,35 @@ export function AuthPanel({ onAuthed }: AuthPanelProps) {
       return
     }
 
+    if (mode === "register" && !/^[a-zA-Z0-9_]{3,24}$/.test(normalizedUsername)) {
+      setError("用户名需为 3-24 位字母、数字或下划线。")
+      return
+    }
+
     setError("")
     setNotice("")
     setLoading(true)
 
     try {
       if (mode === "register") {
+        const { data: available, error: usernameError } = await supabase.rpc("is_username_available", {
+          p_username: normalizedUsername,
+        })
+
+        if (usernameError) throw usernameError
+        if (!available) {
+          setError("该用户名已被使用，请换一个。")
+          return
+        }
+
         const { data, error } = await supabase.auth.signUp({
           email: normalizedEmail,
           password,
+          options: {
+            data: {
+              username: normalizedUsername,
+            },
+          },
         })
 
         if (error) throw error
@@ -99,6 +121,16 @@ export function AuthPanel({ onAuthed }: AuthPanelProps) {
         </div>
 
         <div className="mt-5 grid gap-3">
+          {mode === "register" && (
+            <input
+              autoComplete="username"
+              className="h-11 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition focus:border-indigo-300 focus:bg-white focus:ring-2 focus:ring-indigo-100"
+              onChange={(event) => setUsername(event.target.value)}
+              placeholder="用户名，3-24 位字母、数字或下划线"
+              type="text"
+              value={username}
+            />
+          )}
           <input
             autoComplete="email"
             className="h-11 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition focus:border-indigo-300 focus:bg-white focus:ring-2 focus:ring-indigo-100"

@@ -138,7 +138,7 @@ export default function Home() {
         if (!active) return
 
         setAccount({
-          creditBalance: remoteAccount?.credit_balance ?? 2680,
+          creditBalance: remoteAccount?.credit_balance ?? 0,
           ledger: remoteAccount?.ledger ?? [],
           projects: remoteAccount?.projects ?? [],
           redeemedCodes: remoteAccount?.redeemed_codes ?? [],
@@ -164,7 +164,7 @@ export default function Home() {
       setSyncError("")
       const remoteAccount = await loadSupabaseAccount(user.id)
       setAccount({
-        creditBalance: remoteAccount?.credit_balance ?? 2680,
+        creditBalance: remoteAccount?.credit_balance ?? 0,
         ledger: remoteAccount?.ledger ?? [],
         projects: remoteAccount?.projects ?? [],
         redeemedCodes: remoteAccount?.redeemed_codes ?? [],

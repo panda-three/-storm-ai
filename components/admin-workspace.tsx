@@ -685,9 +685,9 @@ export function AdminWorkspace({
                       <div className="rounded-lg border border-slate-200 p-4" key={item.user_id}>
                         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                           <div className="min-w-0">
-                            <div className="truncate text-sm font-medium text-slate-800">{item.user_id}</div>
+                            <div className="truncate text-sm font-medium text-slate-800">{item.username ?? item.user_id}</div>
                             <div className="mt-1 text-xs text-slate-500">
-                              {item.role} · {new Date(item.updated_at).toLocaleString("zh-CN")}
+                              {item.role} · {item.user_id} · {new Date(item.updated_at).toLocaleString("zh-CN")}
                             </div>
                           </div>
                           <div className="font-semibold text-emerald-700">{item.credit_balance.toLocaleString()} 点</div>

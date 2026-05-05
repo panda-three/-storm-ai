@@ -29,13 +29,23 @@ export interface NormalizedTaskStatus {
 }
 
 interface ApimartImageRequest {
+  imageUrls?: string[]
   model: string
   prompt: string
   size: string
   resolution: string
 }
 
+interface ApimartUploadFile {
+  buffer: Buffer
+  filename: string
+  mimeType: string
+}
+
 interface ApimartVideoRequest {
+  referenceImages?: Array<{
+    url: string
+  }>
   model: string
   prompt: string
   duration: number
@@ -51,13 +61,13 @@ interface ApimartTaskResponse {
 }
 
 export const imageModelMap: Record<string, string> = {
-  "Gemini Nano Banana Pro": "gemini-3-pro-image-preview",
-  "GPT-Image-2": "gpt-image-2-official",
+  "Gemini Nano Banana Pro": "gemini-2.5-flash-image-preview",
+  "GPT-Image-2": "gpt-image-2",
 }
 
 export const videoModelMap: Record<string, string> = {
-  "Gemini Veo 3.1 Fast": "veo3.1-fast",
-  "Gemini Veo 3.1 Quality": "veo3.1-quality",
+  "Gemini Veo 3.1 Fast": "grok-imagine-1.0-video-apimart",
+  "Gemini Veo 3.1 Quality": "grok-imagine-1.0-video-apimart",
   "Grok Imagine Video": "grok-imagine-1.0-video-apimart",
 }
 
@@ -70,7 +80,7 @@ export function normalizeImageResolution(quality: string, model: string) {
         ? "2K"
         : "1K"
 
-  if (model === "GPT-Image-2" || model === "gpt-image-2-official") {
+  if (model === "GPT-Image-2" || model === "gpt-image-2") {
     return value.toLowerCase()
   }
 
@@ -80,6 +90,11 @@ export function normalizeImageResolution(quality: string, model: string) {
 export function normalizeVideoDuration(duration: string) {
   const parsed = Number.parseInt(duration, 10)
   return Number.isFinite(parsed) ? parsed : 6
+}
+
+export function normalizeVideoQuality(quality: string) {
+  const value = quality.trim().toLowerCase()
+  return value === "480p" ? "480p" : "720p"
 }
 
 export function normalizeTaskId(data: unknown) {
@@ -102,50 +117,76 @@ export function normalizeTaskId(data: unknown) {
 export async function createImageGeneration(request: ApimartImageRequest): Promise<GenerationResponse> {
   const model = imageModelMap[request.model] ?? request.model
   const apiKey = process.env.APIMART_API_KEY
-
-  if (!apiKey) {
-    return mockGenerationResponse("image", model)
-  }
-
-  const response = await apimartFetch("/images/generations", {
+  const payload = {
     model,
     prompt: request.prompt,
     size: request.size,
     n: 1,
-    resolution: request.resolution,
+    ...(model === "gpt-image-2" ? {} : { resolution: request.resolution }),
+    ...(request.imageUrls?.length ? { image_urls: request.imageUrls } : {}),
+  }
+
+  if (!apiKey) {
+    logApimart("images/generations mock input", payload)
+    const result = mockGenerationResponse("image", model)
+    logApimart("images/generations mock output", result)
+    return result
+  }
+
+  const response = await apimartFetch("/images/generations", payload)
+
+  const result = normalizeGenerationResponse(response, "image")
+  logApimart("images/generations normalized output", result)
+  return result
+}
+
+export async function uploadApimartImage(file: ApimartUploadFile) {
+  const apiKey = process.env.APIMART_API_KEY
+
+  logApimart("uploads/images input", {
+    filename: file.filename,
+    mimeType: file.mimeType,
+    size: file.buffer.byteLength,
   })
 
-  return normalizeGenerationResponse(response, "image")
+  if (!apiKey) {
+    logApimart("uploads/images mock output", { url: "" })
+    return ""
+  }
+
+  try {
+    const url = await apimartUpload("/uploads/images", file)
+    logApimart("uploads/images output", { url })
+    return url
+  } catch (error) {
+    throw new Error(describeApimartError(error), { cause: error })
+  }
 }
 
 export async function createVideoGeneration(request: ApimartVideoRequest): Promise<GenerationResponse> {
   const model = videoModelMap[request.model] ?? request.model
   const apiKey = process.env.APIMART_API_KEY
-
-  if (!apiKey) {
-    return mockGenerationResponse("video", model)
+  const payload = {
+    model,
+    prompt: request.prompt,
+    size: request.aspectRatio,
+    duration: request.duration,
+    quality: normalizeVideoQuality(request.quality),
+    ...(request.referenceImages?.length ? { image_urls: request.referenceImages.map((image) => image.url) } : {}),
   }
 
-  const payload =
-    model === "grok-imagine-1.0-video-apimart"
-      ? {
-          model,
-          prompt: request.prompt,
-          size: request.aspectRatio,
-          duration: request.duration,
-          quality: request.quality,
-        }
-      : {
-          model,
-          prompt: request.prompt,
-          duration: 8,
-          aspect_ratio: request.aspectRatio,
-          resolution: request.quality,
-        }
+  if (!apiKey) {
+    logApimart("videos/generations mock input", payload)
+    const result = mockGenerationResponse("video", model)
+    logApimart("videos/generations mock output", result)
+    return result
+  }
 
   const response = await apimartFetch("/videos/generations", payload)
 
-  return normalizeGenerationResponse(response, "video")
+  const result = normalizeGenerationResponse(response, "video")
+  logApimart("videos/generations normalized output", result)
+  return result
 }
 
 export async function getTaskStatus(taskId: string): Promise<NormalizedTaskStatus> {
@@ -169,7 +210,9 @@ export async function getTaskStatus(taskId: string): Promise<NormalizedTaskStatu
 
 async function apimartFetch(path: string, body: Record<string, unknown>) {
   try {
+    logApimart(`${path} input`, body)
     const data = await apimartRequest(path, "POST", body)
+    logApimart(`${path} output`, data)
 
     if (data.code && data.code !== 200) {
       throw new Error(data.message ?? data.error ?? `APIMart request failed with code ${data.code}`)
@@ -179,6 +222,10 @@ async function apimartFetch(path: string, body: Record<string, unknown>) {
   } catch (error) {
     throw new Error(describeApimartError(error), { cause: error })
   }
+}
+
+function logApimart(label: string, value: unknown) {
+  console.log(`[APIMart] ${label}`, value)
 }
 
 async function apimartGet(path: string) {
@@ -195,6 +242,41 @@ async function apimartGet(path: string) {
   }
 }
 
+async function apimartUpload(path: string, file: ApimartUploadFile) {
+  const targetUrl = new URL(`${APIMART_BASE_URL}${path}`)
+  const boundary = `----storm-ai-${Date.now().toString(16)}`
+  const head = Buffer.from(
+    [
+      `--${boundary}`,
+      `Content-Disposition: form-data; name="file"; filename="${sanitizeMultipartFilename(file.filename)}"`,
+      `Content-Type: ${file.mimeType || "application/octet-stream"}`,
+      "",
+      "",
+    ].join("\r\n")
+  )
+  const tail = Buffer.from(`\r\n--${boundary}--\r\n`)
+  const payload = Buffer.concat([head, file.buffer, tail])
+  const headers: Record<string, string | number> = {
+    Authorization: `Bearer ${process.env.APIMART_API_KEY}`,
+    "Content-Type": `multipart/form-data; boundary=${boundary}`,
+    "Content-Length": payload.length,
+  }
+
+  const response = await apimartRawRequest(targetUrl, "POST", headers, payload)
+
+  if (response.code && response.code !== 200) {
+    throw new Error(response.message ?? response.error ?? `APIMart upload failed with code ${response.code}`)
+  }
+
+  const url = extractUploadedFileUrl(response)
+
+  if (!url) {
+    throw new Error("APIMart upload did not return a file URL")
+  }
+
+  return url
+}
+
 function apimartRequest(path: string, method: "GET" | "POST", body?: Record<string, unknown>) {
   const targetUrl = new URL(`${APIMART_BASE_URL}${path}`)
   const payload = body ? JSON.stringify(body) : undefined
@@ -207,6 +289,15 @@ function apimartRequest(path: string, method: "GET" | "POST", body?: Record<stri
     headers["Content-Length"] = Buffer.byteLength(payload)
   }
 
+  return apimartRawRequest(targetUrl, method, headers, payload ? Buffer.from(payload) : undefined)
+}
+
+function apimartRawRequest(
+  targetUrl: URL,
+  method: "GET" | "POST",
+  headers: Record<string, string | number>,
+  payload?: Buffer
+) {
   return new Promise<ApimartTaskResponse>((resolve, reject) => {
     const requestOptions: https.RequestOptions = {
       method,
@@ -248,6 +339,45 @@ function apimartRequest(path: string, method: "GET" | "POST", body?: Record<stri
     if (payload) request.write(payload)
     request.end()
   })
+}
+
+function sanitizeMultipartFilename(filename: string) {
+  return filename.replaceAll('"', "'").replaceAll("\r", "").replaceAll("\n", "")
+}
+
+function extractUploadedFileUrl(data: unknown): string {
+  if (!data) return ""
+
+  if (typeof data === "string") {
+    return data.startsWith("http") ? data : ""
+  }
+
+  if (Array.isArray(data)) {
+    for (const item of data) {
+      const url = extractUploadedFileUrl(item)
+      if (url) return url
+    }
+    return ""
+  }
+
+  if (typeof data !== "object") return ""
+
+  const record = data as Record<string, unknown>
+  const directKeys = ["url", "file_url", "fileUrl", "download_url", "downloadUrl", "src"]
+
+  for (const key of directKeys) {
+    const value = record[key]
+    if (typeof value === "string" && value.startsWith("http")) {
+      return value
+    }
+  }
+
+  for (const value of Object.values(record)) {
+    const url = extractUploadedFileUrl(value)
+    if (url) return url
+  }
+
+  return ""
 }
 
 function getApimartProxyUrl() {

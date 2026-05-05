@@ -21,7 +21,7 @@ export interface LocalAccountData {
 
 export function createDefaultAccount(): LocalAccountData {
   return {
-    creditBalance: 2680,
+    creditBalance: 0,
     ledger: [],
     projects: [],
     redeemedCodes: [],

@@ -8,6 +8,7 @@ export interface SupabaseAccountRow {
   redeemed_codes: string[]
   role: "user" | "admin"
   user_id: string
+  username: string | null
 }
 
 export interface CustomerServiceSettings {
@@ -54,6 +55,7 @@ export interface AdminAccountSummary {
   role: "user" | "admin"
   updated_at: string
   user_id: string
+  username: string | null
 }
 
 export interface RedeemResult {
@@ -100,7 +102,7 @@ export async function loadSupabaseAccount(userId: string): Promise<SupabaseAccou
 
   const { data, error } = await supabase
     .from("user_accounts")
-    .select("user_id, credit_balance, projects, ledger, redeemed_codes, role")
+    .select("user_id, username, credit_balance, projects, ledger, redeemed_codes, role")
     .eq("user_id", userId)
     .maybeSingle()
 
@@ -115,7 +117,7 @@ export async function loadAdminAccounts(): Promise<AdminAccountSummary[]> {
 
   const { data, error } = await supabase
     .from("user_accounts")
-    .select("user_id, credit_balance, ledger, role, updated_at")
+    .select("user_id, username, credit_balance, ledger, role, updated_at")
     .order("updated_at", { ascending: false })
     .limit(100)
 

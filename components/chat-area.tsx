@@ -1,6 +1,6 @@
 "use client"
 
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import type { WorkspaceSection } from "@/app/page"
 import type { CreditPackage, CustomerServiceSettings, ModelPricing } from "@/lib/supabase"
 import { calculatePricingCredits, redeemCreditCode, refundCredits, spendCredits } from "@/lib/supabase"
@@ -17,6 +17,7 @@ import {
   Eye,
   Film,
   History,
+  ImagePlus,
   ImageIcon,
   Loader2,
   Menu,
@@ -26,6 +27,7 @@ import {
   Sparkles,
   Trash2,
   WalletCards,
+  X,
 } from "lucide-react"
 
 type ChatWorkspaceSection = Exclude<WorkspaceSection, "admin">
@@ -78,6 +80,18 @@ const sectionMeta: Record<
     title: "点数充值",
     description: "添加客服微信购买兑换码，并在站内兑换 AI 点数。",
   },
+}
+
+const maxReferenceImages = 4
+const maxReferenceImageBytes = 10 * 1024 * 1024
+const supportedReferenceImageTypes = ["image/jpeg", "image/png", "image/webp"]
+
+interface ReferenceImage {
+  file: File
+  id: string
+  name: string
+  previewUrl: string
+  size: number
 }
 
 function getAssetExtension(url: string, fallback: string) {
@@ -300,7 +314,7 @@ const seedHistoryItems: ProjectItem[] = [
     time: "今天 10:48",
     model: "产品运镜 V1",
     palette: "from-slate-950 via-indigo-700 to-cyan-400",
-    previewLabel: "10 秒 · 1080p",
+    previewLabel: "10 秒 · 720P",
     prompt: "科技产品在黑色展台缓慢旋转，镜头推进",
   },
   {
@@ -477,7 +491,10 @@ function ImageWorkspace({
   const [isGenerating, setIsGenerating] = useState(false)
   const [error, setError] = useState("")
   const [result, setResult] = useState<ImageResult | null>(null)
+  const [referenceImages, setReferenceImages] = useState<ReferenceImage[]>([])
+  const referenceInputRef = useRef<HTMLInputElement>(null)
   const promptRef = useRef<HTMLTextAreaElement>(null)
+  const objectUrlsRef = useRef<Set<string>>(new Set())
   const currentPricing = findModelPricing(modelPricing, {
     model,
     quality,
@@ -490,6 +507,75 @@ function ImageWorkspace({
     if (error === "请先输入生图提示词。" && value.trim()) {
       setError("")
     }
+  }
+
+  useEffect(() => {
+    const objectUrls = objectUrlsRef.current
+
+    return () => {
+      objectUrls.forEach((url) => URL.revokeObjectURL(url))
+      objectUrls.clear()
+    }
+  }, [])
+
+  const handleReferenceImageChange = (files: FileList | null) => {
+    if (!files?.length) return
+
+    const availableSlots = maxReferenceImages - referenceImages.length
+    const selectedFiles = Array.from(files).slice(0, Math.max(availableSlots, 0))
+
+    if (availableSlots <= 0) {
+      setError(`参考图最多上传 ${maxReferenceImages} 张。`)
+      if (referenceInputRef.current) referenceInputRef.current.value = ""
+      return
+    }
+
+    const validImages: ReferenceImage[] = []
+    let nextError = ""
+
+    for (const file of selectedFiles) {
+      if (!supportedReferenceImageTypes.includes(file.type)) {
+        nextError = "参考图仅支持 JPG、PNG、WebP 格式。"
+        continue
+      }
+
+      if (file.size > maxReferenceImageBytes) {
+        nextError = "单张参考图不能超过 10MB。"
+        continue
+      }
+
+      const previewUrl = URL.createObjectURL(file)
+      objectUrlsRef.current.add(previewUrl)
+      validImages.push({
+        file,
+        id: `${file.name}-${file.lastModified}-${previewUrl}`,
+        name: file.name,
+        previewUrl,
+        size: file.size,
+      })
+    }
+
+    if (files.length > availableSlots) {
+      nextError = `参考图最多上传 ${maxReferenceImages} 张，已保留前 ${availableSlots} 张。`
+    }
+
+    if (validImages.length > 0) {
+      setReferenceImages((items) => [...items, ...validImages])
+    }
+
+    setError(nextError)
+    if (referenceInputRef.current) referenceInputRef.current.value = ""
+  }
+
+  const handleReferenceImageRemove = (id: string) => {
+    setReferenceImages((items) => {
+      const removed = items.find((item) => item.id === id)
+      if (removed) {
+        URL.revokeObjectURL(removed.previewUrl)
+        objectUrlsRef.current.delete(removed.previewUrl)
+      }
+      return items.filter((item) => item.id !== id)
+    })
   }
 
   const handleGenerate = async () => {
@@ -538,17 +624,18 @@ function ImageWorkspace({
       billed = true
       await onAccountRefresh()
 
+      const formData = new FormData()
+      formData.append("prompt", trimmedPrompt)
+      formData.append("model", model)
+      formData.append("quality", quality)
+      formData.append("ratio", ratio)
+      referenceImages.forEach((image) => {
+        formData.append("referenceImages", image.file, image.name)
+      })
+
       const response = await fetch("/api/generate/image", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          prompt: trimmedPrompt,
-          model,
-          quality,
-          ratio,
-        }),
+        body: formData,
       }).catch((error) => {
         throw new Error(`生图接口请求失败：${getErrorMessage(error, "请检查本地服务或网络连接。")}`)
       })
@@ -672,6 +759,51 @@ function ImageWorkspace({
             }`}
             placeholder="描述你想生成的画面，例如：未来感 AI 工作室，玻璃墙面，柔和灯光，产品级渲染..."
           />
+          <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <input
+                ref={referenceInputRef}
+                accept="image/jpeg,image/png,image/webp"
+                className="hidden"
+                multiple
+                onChange={(event) => handleReferenceImageChange(event.target.files)}
+                type="file"
+              />
+              <Button
+                aria-label="添加参考图"
+                className="h-12 w-12 rounded-lg border-slate-200 bg-white p-0 text-slate-600 hover:bg-slate-100"
+                disabled={isGenerating || referenceImages.length >= maxReferenceImages}
+                onClick={() => referenceInputRef.current?.click()}
+                type="button"
+                variant="outline"
+              >
+                <ImagePlus className="h-5 w-5" />
+              </Button>
+              {referenceImages.map((image, index) => (
+                <div
+                  className="group relative h-12 w-12 overflow-hidden rounded-lg border border-slate-200 bg-white"
+                  key={image.id}
+                >
+                  <img alt={`参考图 ${index + 1}`} className="h-full w-full object-cover" src={image.previewUrl} />
+                  <button
+                    aria-label={`移除参考图 ${index + 1}`}
+                    className="absolute right-1 top-1 grid h-5 w-5 place-items-center rounded-full bg-slate-950/70 text-white opacity-0 transition group-hover:opacity-100 focus:opacity-100"
+                    disabled={isGenerating}
+                    onClick={() => handleReferenceImageRemove(image.id)}
+                    type="button"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+              <div className="min-w-48 text-xs text-slate-500">
+                <div className="font-medium text-slate-700">参考图</div>
+                <div>
+                  已添加 {referenceImages.length}/{maxReferenceImages} 张 · JPG/PNG/WebP · 单张 10MB 内
+                </div>
+              </div>
+            </div>
+          </div>
           <div className="mt-4 grid gap-4 lg:grid-cols-3">
             <OptionGroup
               label="生图模型"
@@ -743,7 +875,10 @@ function VideoWorkspace({
   const [isGenerating, setIsGenerating] = useState(false)
   const [error, setError] = useState("")
   const [result, setResult] = useState<VideoResult | null>(null)
+  const [referenceImages, setReferenceImages] = useState<ReferenceImage[]>([])
+  const referenceInputRef = useRef<HTMLInputElement>(null)
   const promptRef = useRef<HTMLTextAreaElement>(null)
+  const videoObjectUrlsRef = useRef<Set<string>>(new Set())
   const currentPricing = findModelPricing(modelPricing, {
     aspectRatio,
     duration,
@@ -758,6 +893,75 @@ function VideoWorkspace({
     if (error === "请先输入视频提示词。" && value.trim()) {
       setError("")
     }
+  }
+
+  useEffect(() => {
+    const objectUrls = videoObjectUrlsRef.current
+
+    return () => {
+      objectUrls.forEach((url) => URL.revokeObjectURL(url))
+      objectUrls.clear()
+    }
+  }, [])
+
+  const handleReferenceImageChange = (files: FileList | null) => {
+    if (!files?.length) return
+
+    const availableSlots = maxReferenceImages - referenceImages.length
+    const selectedFiles = Array.from(files).slice(0, Math.max(availableSlots, 0))
+
+    if (availableSlots <= 0) {
+      setError(`参考图最多上传 ${maxReferenceImages} 张。`)
+      if (referenceInputRef.current) referenceInputRef.current.value = ""
+      return
+    }
+
+    const validImages: ReferenceImage[] = []
+    let nextError = ""
+
+    for (const file of selectedFiles) {
+      if (!supportedReferenceImageTypes.includes(file.type)) {
+        nextError = "参考图仅支持 JPG、PNG、WebP 格式。"
+        continue
+      }
+
+      if (file.size > maxReferenceImageBytes) {
+        nextError = "单张参考图不能超过 10MB。"
+        continue
+      }
+
+      const previewUrl = URL.createObjectURL(file)
+      videoObjectUrlsRef.current.add(previewUrl)
+      validImages.push({
+        file,
+        id: `${file.name}-${file.lastModified}-${previewUrl}`,
+        name: file.name,
+        previewUrl,
+        size: file.size,
+      })
+    }
+
+    if (files.length > availableSlots) {
+      nextError = `参考图最多上传 ${maxReferenceImages} 张，已保留前 ${availableSlots} 张。`
+    }
+
+    if (validImages.length > 0) {
+      setReferenceImages((items) => [...items, ...validImages])
+    }
+
+    setError(nextError)
+    if (referenceInputRef.current) referenceInputRef.current.value = ""
+  }
+
+  const handleReferenceImageRemove = (id: string) => {
+    setReferenceImages((items) => {
+      const removed = items.find((item) => item.id === id)
+      if (removed) {
+        URL.revokeObjectURL(removed.previewUrl)
+        videoObjectUrlsRef.current.delete(removed.previewUrl)
+      }
+      return items.filter((item) => item.id !== id)
+    })
   }
 
   const handleGenerate = async () => {
@@ -806,18 +1010,19 @@ function VideoWorkspace({
       billed = true
       await onAccountRefresh()
 
+      const formData = new FormData()
+      formData.append("prompt", trimmedPrompt)
+      formData.append("model", model)
+      formData.append("duration", duration)
+      formData.append("quality", quality)
+      formData.append("aspectRatio", aspectRatio)
+      referenceImages.forEach((image) => {
+        formData.append("referenceImages", image.file, image.name)
+      })
+
       const response = await fetch("/api/generate/video", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          prompt: trimmedPrompt,
-          model,
-          duration,
-          quality,
-          aspectRatio,
-        }),
+        body: formData,
       }).catch((error) => {
         throw new Error(`视频接口请求失败：${getErrorMessage(error, "请检查本地服务或网络连接。")}`)
       })
@@ -943,6 +1148,51 @@ function VideoWorkspace({
             }`}
             placeholder="描述你想生成的视频，例如：科技产品在黑色展台缓慢旋转，镜头推进，背景有流动光线..."
           />
+          <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <input
+                ref={referenceInputRef}
+                accept="image/jpeg,image/png,image/webp"
+                className="hidden"
+                multiple
+                onChange={(event) => handleReferenceImageChange(event.target.files)}
+                type="file"
+              />
+              <Button
+                aria-label="添加参考图"
+                className="h-16 w-16 rounded-lg border-dashed border-slate-300 bg-white p-0 text-slate-500 hover:border-indigo-300 hover:bg-indigo-50"
+                disabled={isGenerating || referenceImages.length >= maxReferenceImages}
+                onClick={() => referenceInputRef.current?.click()}
+                type="button"
+                variant="outline"
+              >
+                <ImagePlus className="h-6 w-6" />
+              </Button>
+              {referenceImages.map((image, index) => (
+                <div
+                  className="group relative h-16 w-16 overflow-hidden rounded-lg border border-slate-200 bg-white"
+                  key={image.id}
+                >
+                  <img alt={`参考图 ${index + 1}`} className="h-full w-full object-cover" src={image.previewUrl} />
+                  <button
+                    aria-label={`移除参考图 ${index + 1}`}
+                    className="absolute right-1 top-1 grid h-5 w-5 place-items-center rounded-full bg-slate-950/70 text-white opacity-0 transition group-hover:opacity-100 focus:opacity-100"
+                    disabled={isGenerating}
+                    onClick={() => handleReferenceImageRemove(image.id)}
+                    type="button"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+              <div className="min-w-48 text-xs text-slate-500">
+                <div className="font-medium text-slate-700">参考图</div>
+                <div>
+                  已添加 {referenceImages.length}/{maxReferenceImages} 张 · JPG/PNG/WebP · 单张 10MB 内
+                </div>
+              </div>
+            </div>
+          </div>
           <div className="mt-4 grid gap-4 lg:grid-cols-3">
             <OptionGroup
               label="视频模型"
