@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react"
 import type { SupabaseClient, User } from "@supabase/supabase-js"
 import { AuthPanel } from "@/components/auth-panel"
 import { Sidebar } from "@/components/sidebar"
-import { ChatArea, type ProjectItem } from "@/components/chat-area"
+import { ChatArea, normalizeProjectItem, type ProjectItem } from "@/components/chat-area"
 import { AdminWorkspace } from "@/components/admin-workspace"
 import {
   createDefaultAccount,
@@ -140,7 +140,7 @@ export default function Home() {
         setAccount({
           creditBalance: remoteAccount?.credit_balance ?? 0,
           ledger: remoteAccount?.ledger ?? [],
-          projects: remoteAccount?.projects ?? [],
+          projects: (remoteAccount?.projects ?? []).map(normalizeProjectItem),
           redeemedCodes: remoteAccount?.redeemed_codes ?? [],
           role: remoteAccount?.role ?? "user",
           userId: user.id,
@@ -166,7 +166,7 @@ export default function Home() {
       setAccount({
         creditBalance: remoteAccount?.credit_balance ?? 0,
         ledger: remoteAccount?.ledger ?? [],
-        projects: remoteAccount?.projects ?? [],
+        projects: (remoteAccount?.projects ?? []).map(normalizeProjectItem),
         redeemedCodes: remoteAccount?.redeemed_codes ?? [],
         role: remoteAccount?.role ?? "user",
         userId: user.id,
@@ -224,14 +224,14 @@ export default function Home() {
   const addProject = useCallback((project: ProjectItem) => {
     setAccount((current) => ({
       ...current,
-      projects: [project, ...current.projects.filter((item) => item.id !== project.id)],
+      projects: [normalizeProjectItem(project), ...current.projects.filter((item) => item.id !== project.id)],
     }))
   }, [])
 
   const updateProject = useCallback((project: ProjectItem) => {
     setAccount((current) => ({
       ...current,
-      projects: current.projects.map((item) => (item.id === project.id ? { ...item, ...project } : item)),
+      projects: current.projects.map((item) => (item.id === project.id ? normalizeProjectItem({ ...item, ...project }) : item)),
     }))
   }, [])
 

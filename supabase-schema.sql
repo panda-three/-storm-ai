@@ -283,7 +283,7 @@ begin
     'type', 'redeem',
     'code', v_code,
     'amount', v_redeem.credits,
-    'createdAt', to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
+    'createdAt', to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
   );
 
   update public.redeem_codes
@@ -386,7 +386,7 @@ begin
     'type', 'generate',
     'code', coalesce(p_reason, 'AI 生成扣费'),
     'amount', -p_amount,
-    'createdAt', to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
+    'createdAt', to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
   );
 
   update public.user_accounts
@@ -463,7 +463,7 @@ begin
     'type', 'refund',
     'code', coalesce(p_reason, 'AI 生成失败退款'),
     'amount', p_amount,
-    'createdAt', to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
+    'createdAt', to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
   );
 
   update public.user_accounts

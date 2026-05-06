@@ -7,6 +7,7 @@ import type { AdminAccountSummary, CreditPackage, CustomerServiceSettings, Model
 import { calculatePricingCredits, createRedeemCode, saveCreditPackage, saveCustomerServiceSettings, saveModelPricing } from "@/lib/supabase"
 import { AlertCircle, ArrowLeft, CheckCircle2, Coins, Loader2, Menu, QrCode, Save, ShieldCheck, SlidersHorizontal, Ticket } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { formatLedgerDateTime, getLedgerTimeValue } from "@/lib/date-time"
 
 interface AdminWorkspaceProps {
   canAccessAdmin: boolean
@@ -42,12 +43,6 @@ const emptyPackageForm = {
 }
 
 const ledgerPageSize = 8
-
-function getLedgerTimeValue(createdAt: string) {
-  const normalized = createdAt.includes("T") ? createdAt : createdAt.replace(" ", "T")
-  const timestamp = Date.parse(normalized)
-  return Number.isFinite(timestamp) ? timestamp : 0
-}
 
 function getLedgerTypeLabel(type: AdminAccountSummary["ledger"][number]["type"]) {
   if (type === "redeem") return "充值"
@@ -769,7 +764,7 @@ export function AdminWorkspace({
                               {item.username ?? "未设置用户名"} · {item.userId}
                             </div>
                             <div className="mt-1 truncate text-xs text-slate-400">
-                              {item.createdAt} · {getLedgerTypeLabel(item.type)}
+                              {formatLedgerDateTime(item.createdAt)} · {getLedgerTypeLabel(item.type)}
                             </div>
                           </div>
                           <div className={item.amount >= 0 ? "font-semibold text-emerald-700" : "font-semibold text-rose-700"}>

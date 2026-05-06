@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import type { WorkspaceSection } from "@/app/page"
 import type { CreditPackage, CustomerServiceSettings, ModelPricing } from "@/lib/supabase"
 import { calculatePricingCredits, redeemCreditCode, refundCredits, spendCredits } from "@/lib/supabase"
+import { formatLedgerDateTime } from "@/lib/date-time"
 import { imageModelOptions, imageModelSettings, videoModelOptions, videoModelSettings } from "@/lib/model-options"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -251,6 +252,30 @@ export interface ProjectItem {
   previewUrl?: string
   taskId?: string
   taskError?: string
+}
+
+export function normalizeProjectItem(project: ProjectItem): ProjectItem {
+  const rawStatus = String(project.status ?? "").trim().toLowerCase()
+  let status: ProjectStatus
+
+  if (["已完成", "completed", "complete", "success", "succeeded", "done", "finished"].includes(rawStatus)) {
+    status = "已完成"
+  } else if (["生成中", "submitted", "processing", "pending", "running"].includes(rawStatus)) {
+    status = "生成中"
+  } else if (["失败", "failed", "fail", "error"].includes(rawStatus)) {
+    status = "失败"
+  } else if (project.taskError) {
+    status = "失败"
+  } else if (project.previewUrl) {
+    status = "已完成"
+  } else {
+    status = "生成中"
+  }
+
+  return {
+    ...project,
+    status,
+  }
 }
 
 interface ImageResult {
@@ -774,7 +799,7 @@ function ImageWorkspace({
             id: nextResult.id,
             title: nextResult.prompt.slice(0, 22) || "未命名生图任务",
             type: "生图",
-            status,
+            status: nextResult.status,
             time: nextResult.createdAt,
             model: nextResult.model,
             palette: nextResult.palette,
@@ -1156,7 +1181,7 @@ function VideoWorkspace({
             id: nextResult.id,
             title: nextResult.prompt.slice(0, 22) || "未命名视频任务",
             type: "视频",
-            status,
+            status: nextResult.status,
             time: nextResult.createdAt,
             model: nextResult.model,
             palette: nextResult.palette,
@@ -1749,7 +1774,7 @@ function CreditsWorkspace({
                 <div className="flex items-center justify-between gap-3 text-sm" key={item.id}>
                   <div className="min-w-0">
                     <div className="truncate font-medium text-slate-700">{item.code}</div>
-                    <div className="text-xs text-slate-500">{item.createdAt}</div>
+                    <div className="text-xs text-slate-500">{formatLedgerDateTime(item.createdAt)}</div>
                   </div>
                   <div className="font-medium text-emerald-700">+{item.amount.toLocaleString()} 点</div>
                 </div>
