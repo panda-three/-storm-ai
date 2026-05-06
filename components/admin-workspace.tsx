@@ -69,7 +69,7 @@ function getDefaultPricingForm(type: "image" | "video"): Omit<ModelPricing, "id"
     const settings = videoModelSettings[model]
 
     return {
-      aspect_ratio: settings.aspectRatios[0],
+      aspect_ratio: null,
       cost_cny: 1,
       duration_seconds: parseDurationSeconds(settings.durations[0]),
       enabled: true,
@@ -173,7 +173,6 @@ export function AdminWorkspace({
   const pricingVideoSettings = pricingForm.type === "video" ? videoModelSettings[pricingForm.model] : null
   const pricingQualityOptions = pricingImageSettings?.qualities ?? pricingVideoSettings?.qualities ?? []
   const pricingDurationOptions = pricingVideoSettings?.durations ?? []
-  const pricingAspectRatioOptions = pricingVideoSettings?.aspectRatios ?? []
 
   const handleSaveSettings = async () => {
     setSaving(true)
@@ -279,12 +278,9 @@ export function AdminWorkspace({
 
     if (
       pricingForm.type === "video" &&
-      (!pricingForm.duration_seconds ||
-        !pricingDurationOptions.includes(formatDurationOption(pricingForm.duration_seconds)) ||
-        !pricingForm.aspect_ratio ||
-        !pricingAspectRatioOptions.includes(pricingForm.aspect_ratio))
+      (!pricingForm.duration_seconds || !pricingDurationOptions.includes(formatDurationOption(pricingForm.duration_seconds)))
     ) {
-      setFeedback({ type: "error", message: "请选择有效视频时长和比例。" })
+      setFeedback({ type: "error", message: "请选择有效视频时长。" })
       return
     }
 
@@ -299,6 +295,7 @@ export function AdminWorkspace({
     try {
       await saveModelPricing({
         ...pricingForm,
+        aspect_ratio: null,
         cost_cny: normalizeCurrency(pricingForm.cost_cny),
         model: pricingForm.model,
         quality: pricingForm.quality,
@@ -540,7 +537,7 @@ export function AdminWorkspace({
                       const settings = videoModelSettings[value]
                       setPricingForm((current) => ({
                         ...current,
-                        aspect_ratio: settings.aspectRatios[0],
+                        aspect_ratio: null,
                         duration_seconds: parseDurationSeconds(settings.durations[0]),
                         model: value,
                         quality: settings.qualities[0],
@@ -564,12 +561,6 @@ export function AdminWorkspace({
                         }
                         options={pricingDurationOptions}
                         value={formatDurationOption(pricingForm.duration_seconds)}
-                      />
-                      <AdminSelect
-                        label="比例"
-                        onChange={(value) => setPricingForm((current) => ({ ...current, aspect_ratio: value }))}
-                        options={pricingAspectRatioOptions}
-                        value={pricingForm.aspect_ratio ?? ""}
                       />
                     </>
                   )}
@@ -611,7 +602,6 @@ export function AdminWorkspace({
                             <div className="mt-1 text-sm text-slate-500">
                               {item.quality}
                               {item.duration_seconds ? ` · ${item.duration_seconds}秒` : ""}
-                              {item.aspect_ratio ? ` · ${item.aspect_ratio}` : ""}
                             </div>
                             <div className="mt-1 text-xs text-slate-400">
                               成本 {item.cost_cny.toFixed(2)} 元 · 倍率 {item.markup} · 扣 {calculatePricingCredits(item)} 点

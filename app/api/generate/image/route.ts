@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { createImageGeneration, normalizeImageResolution, uploadApimartImage } from "@/lib/apimart"
+import { gptImage2Supported4KRatios, isValidImageRatioForQuality } from "@/lib/model-options"
 
 const maxReferenceImages = 4
 const maxReferenceImageBytes = 10 * 1024 * 1024
@@ -20,6 +21,16 @@ export async function POST(request: Request) {
     const quality = String(getValue("quality") ?? "2K")
     const ratio = String(getValue("ratio") ?? "1:1")
     const referenceImages = body instanceof FormData ? body.getAll("referenceImages").filter(isImageFile) : []
+
+    if (!isValidImageRatioForQuality(model, quality, ratio)) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `GPT-Image-2 选择 4K 时仅支持这些图片比例：${gptImage2Supported4KRatios.join(" / ")}。`,
+        },
+        { status: 400 }
+      )
+    }
 
     logGenerateImage("input", {
       contentType: body instanceof FormData ? "multipart/form-data" : "application/json",

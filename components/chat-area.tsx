@@ -5,7 +5,13 @@ import type { WorkspaceSection } from "@/app/page"
 import type { CreditPackage, CustomerServiceSettings, ModelPricing } from "@/lib/supabase"
 import { calculatePricingCredits, redeemCreditCode, refundCredits, spendCredits } from "@/lib/supabase"
 import { formatLedgerDateTime } from "@/lib/date-time"
-import { imageModelOptions, imageModelSettings, videoModelOptions, videoModelSettings } from "@/lib/model-options"
+import {
+  getImageRatiosForSelection,
+  imageModelOptions,
+  imageModelSettings,
+  videoModelOptions,
+  videoModelSettings,
+} from "@/lib/model-options"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -86,13 +92,16 @@ const sectionMeta: Record<
 const maxReferenceImages = 4
 const maxReferenceImageBytes = 10 * 1024 * 1024
 const supportedReferenceImageTypes = ["image/jpeg", "image/png", "image/webp"]
+const imageDefaultRatioOption = "默认"
 
 interface ReferenceImage {
   file: File
+  height: number
   id: string
   name: string
   previewUrl: string
   size: number
+  width: number
 }
 
 function getAssetExtension(url: string, fallback: string) {
@@ -133,6 +142,42 @@ async function copyText(text: string) {
   textarea.remove()
 }
 
+function parseAspectRatio(ratio: string) {
+  const [width, height] = ratio.split(":").map(Number)
+  return width > 0 && height > 0 ? width / height : null
+}
+
+function resolveReferenceImageRatio(image: ReferenceImage | undefined, supportedRatios: string[]) {
+  const ratios = supportedRatios.filter((item) => item !== imageDefaultRatioOption)
+
+  if (!image || image.width <= 0 || image.height <= 0) {
+    return ratios[0] ?? "1:1"
+  }
+
+  const sourceRatio = image.width / image.height
+  return ratios.reduce((closest, current) => {
+    const closestRatio = parseAspectRatio(closest) ?? 1
+    const currentRatio = parseAspectRatio(current) ?? 1
+    return Math.abs(Math.log(currentRatio / sourceRatio)) < Math.abs(Math.log(closestRatio / sourceRatio))
+      ? current
+      : closest
+  }, ratios[0] ?? "1:1")
+}
+
+function getImageDimensions(src: string) {
+  return new Promise<{ width: number; height: number }>((resolve) => {
+    const image = new window.Image()
+    image.onload = () => {
+      resolve({
+        height: image.naturalHeight,
+        width: image.naturalWidth,
+      })
+    }
+    image.onerror = () => resolve({ height: 0, width: 0 })
+    image.src = src
+  })
+}
+
 function parseDurationSeconds(duration?: string) {
   if (!duration) return null
   const parsed = Number.parseInt(duration, 10)
@@ -158,6 +203,10 @@ function getErrorMessage(error: unknown, fallback: string) {
   return fallback
 }
 
+function getOptionLabel(option: string) {
+  return option === "auto" ? "默认" : option
+}
+
 function findModelPricing(
   pricing: ModelPricing[],
   params: {
@@ -175,7 +224,6 @@ function findModelPricing(
     if (item.model !== params.model) return false
     if ((item.quality ?? "") !== params.quality) return false
     if (params.type === "video" && item.duration_seconds !== durationSeconds) return false
-    if (params.type === "video" && (item.aspect_ratio ?? "") !== (params.aspectRatio ?? "")) return false
 
     return true
   })
@@ -610,6 +658,7 @@ function ImageWorkspace({
   const imageSettings = imageModelSettings[model]
   const [quality, setQuality] = useState(imageSettings.qualities[1])
   const [ratio, setRatio] = useState(imageSettings.ratios[0])
+  const ratioOptions = getImageRatiosForSelection(model, quality)
   const [isGenerating, setIsGenerating] = useState(false)
   const [error, setError] = useState("")
   const [result, setResult] = useState<ImageResult | null>(null)
@@ -640,7 +689,13 @@ function ImageWorkspace({
     }
   }, [])
 
-  const handleReferenceImageChange = (files: FileList | null) => {
+  useEffect(() => {
+    if (!ratioOptions.includes(ratio)) {
+      setRatio(ratioOptions[0])
+    }
+  }, [ratio, ratioOptions])
+
+  const handleReferenceImageChange = async (files: FileList | null) => {
     if (!files?.length) return
 
     const availableSlots = maxReferenceImages - referenceImages.length
@@ -668,12 +723,15 @@ function ImageWorkspace({
 
       const previewUrl = URL.createObjectURL(file)
       objectUrlsRef.current.add(previewUrl)
+      const dimensions = await getImageDimensions(previewUrl)
       validImages.push({
         file,
+        height: dimensions.height,
         id: `${file.name}-${file.lastModified}-${previewUrl}`,
         name: file.name,
         previewUrl,
         size: file.size,
+        width: dimensions.width,
       })
     }
 
@@ -750,7 +808,10 @@ function ImageWorkspace({
       formData.append("prompt", trimmedPrompt)
       formData.append("model", model)
       formData.append("quality", quality)
-      formData.append("ratio", ratio)
+      const resolvedRatio =
+        ratio === imageDefaultRatioOption ? resolveReferenceImageRatio(referenceImages[0], ratioOptions) : ratio
+
+      formData.append("ratio", resolvedRatio)
       referenceImages.forEach((image) => {
         formData.append("referenceImages", image.file, image.name)
       })
@@ -772,7 +833,7 @@ function ImageWorkspace({
         prompt: trimmedPrompt,
         model,
         quality,
-        ratio,
+        ratio: resolvedRatio,
         createdAt: "刚刚",
         imageUrl: "",
         palette: "from-indigo-500 via-sky-400 to-emerald-300",
@@ -930,7 +991,7 @@ function ImageWorkspace({
               selected={model}
             />
             <OptionGroup label="图片清晰度" onChange={setQuality} options={imageSettings.qualities} selected={quality} />
-            <OptionGroup label="图片比例" onChange={setRatio} options={imageSettings.ratios} selected={ratio} />
+            <OptionGroup label="图片比例" onChange={setRatio} options={ratioOptions} selected={ratio} />
           </div>
           {error && (
             <div className="mt-4 flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
@@ -1047,10 +1108,12 @@ function VideoWorkspace({
       videoObjectUrlsRef.current.add(previewUrl)
       validImages.push({
         file,
+        height: 0,
         id: `${file.name}-${file.lastModified}-${previewUrl}`,
         name: file.name,
         previewUrl,
         size: file.size,
+        width: 0,
       })
     }
 
@@ -1845,7 +1908,7 @@ function OptionGroup({
               onClick={() => onChange?.(option)}
               type="button"
             >
-              {option}
+              {getOptionLabel(option)}
             </button>
           )
         })}

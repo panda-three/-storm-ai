@@ -2,6 +2,7 @@ import https from "node:https"
 import net from "node:net"
 import tls from "node:tls"
 import type { Duplex } from "node:stream"
+import { gptImage2ApiModelName, gptImage2ModelName, isGptImage2Model } from "@/lib/model-options"
 
 const APIMART_BASE_URL = process.env.APIMART_BASE_URL ?? "https://api.apimart.ai/v1"
 const APIMART_PROXY_URL = getApimartProxyUrl()
@@ -61,13 +62,12 @@ interface ApimartTaskResponse {
 }
 
 export const imageModelMap: Record<string, string> = {
-  "Gemini Nano Banana Pro": "gemini-2.5-flash-image-preview",
-  "GPT-Image-2": "gpt-image-2",
+  "Gemini Nano Banana Pro": "gemini-3.1-flash-image-preview",
+  [gptImage2ModelName]: gptImage2ApiModelName,
 }
 
 export const videoModelMap: Record<string, string> = {
-  "Gemini Veo 3.1 Fast": "grok-imagine-1.0-video-apimart",
-  "Gemini Veo 3.1 Quality": "grok-imagine-1.0-video-apimart",
+  "Gemini Veo 3.1 Fast": "veo3.1-fast",
   "Grok Imagine Video": "grok-imagine-1.0-video-apimart",
 }
 
@@ -80,7 +80,7 @@ export function normalizeImageResolution(quality: string, model: string) {
         ? "2K"
         : "1K"
 
-  if (model === "GPT-Image-2" || model === "gpt-image-2") {
+  if (isGptImage2Model(model)) {
     return value.toLowerCase()
   }
 
@@ -122,7 +122,7 @@ export async function createImageGeneration(request: ApimartImageRequest): Promi
     prompt: request.prompt,
     size: request.size,
     n: 1,
-    ...(model === "gpt-image-2" ? {} : { resolution: request.resolution }),
+    resolution: request.resolution,
     ...(request.imageUrls?.length ? { image_urls: request.imageUrls } : {}),
   }
 
@@ -169,7 +169,7 @@ export async function createVideoGeneration(request: ApimartVideoRequest): Promi
   const payload = {
     model,
     prompt: request.prompt,
-    size: request.aspectRatio,
+    aspect_ratio: request.aspectRatio,
     duration: request.duration,
     quality: normalizeVideoQuality(request.quality),
     ...(request.referenceImages?.length ? { image_urls: request.referenceImages.map((image) => image.url) } : {}),
