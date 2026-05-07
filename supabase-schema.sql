@@ -319,6 +319,9 @@ set search_path = public
 as $$
 declare
   v_user_id uuid := auth.uid();
+  v_existing_projects jsonb := '[]'::jsonb;
+  v_project jsonb;
+  v_projects jsonb;
 begin
   if v_user_id is null then
     raise exception '请先登录后再保存历史项目。';
@@ -328,8 +331,30 @@ begin
     raise exception '历史项目格式不正确。';
   end if;
 
+  insert into public.user_accounts (user_id)
+  values (v_user_id)
+  on conflict (user_id) do nothing;
+
+  select projects
+  into v_existing_projects
+  from public.user_accounts
+  where user_id = v_user_id
+  for update;
+
+  v_projects := coalesce(v_existing_projects, '[]'::jsonb);
+
+  for v_project in select value from jsonb_array_elements(coalesce(p_projects, '[]'::jsonb))
+  loop
+    v_projects := jsonb_path_query_array(
+      v_projects,
+      '$[*] ? (@.id != $projectId)',
+      jsonb_build_object('projectId', v_project->>'id')
+    );
+    v_projects := jsonb_build_array(v_project) || v_projects;
+  end loop;
+
   insert into public.user_accounts (user_id, projects)
-  values (v_user_id, p_projects)
+  values (v_user_id, v_projects)
   on conflict (user_id) do update
   set
     projects = excluded.projects,

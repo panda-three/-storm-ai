@@ -8,6 +8,8 @@ import { ChatArea, normalizeProjectItem, type ProjectItem } from "@/components/c
 import { AdminWorkspace } from "@/components/admin-workspace"
 import {
   createDefaultAccount,
+  loadLocalAccount,
+  saveLocalAccount,
   type LocalAccountData,
 } from "@/lib/local-store"
 import {
@@ -51,7 +53,7 @@ async function clearLocalSupabaseSession(supabase: SupabaseClient) {
 export type WorkspaceSection = "image" | "video" | "history" | "credits" | "admin"
 
 export default function Home() {
-  const [account, setAccount] = useState<LocalAccountData>(() => createDefaultAccount())
+  const [account, setAccount] = useState<LocalAccountData>(() => loadLocalAccount())
   const [authReady, setAuthReady] = useState(false)
   const [user, setUser] = useState<User | null>(null)
   const [syncError, setSyncError] = useState("")
@@ -221,6 +223,11 @@ export default function Home() {
     return () => window.clearTimeout(timer)
   }, [account, user])
 
+  useEffect(() => {
+    if (user) return
+    saveLocalAccount(account)
+  }, [account, user])
+
   const addProject = useCallback((project: ProjectItem) => {
     setAccount((current) => ({
       ...current,
@@ -231,7 +238,9 @@ export default function Home() {
   const updateProject = useCallback((project: ProjectItem) => {
     setAccount((current) => ({
       ...current,
-      projects: current.projects.map((item) => (item.id === project.id ? normalizeProjectItem({ ...item, ...project }) : item)),
+      projects: current.projects.some((item) => item.id === project.id)
+        ? current.projects.map((item) => (item.id === project.id ? normalizeProjectItem({ ...item, ...project }) : item))
+        : [normalizeProjectItem(project), ...current.projects],
     }))
   }, [])
 
