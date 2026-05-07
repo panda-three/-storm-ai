@@ -123,6 +123,16 @@ export function AdminWorkspace({
   const [saving, setSaving] = useState(false)
   const filteredRedeemCodes =
     redeemStatusFilter === "all" ? redeemCodes : redeemCodes.filter((item) => item.status === redeemStatusFilter)
+  const accountNameById = useMemo(
+    () =>
+      new Map(
+        adminAccounts.map((account) => [
+          account.user_id,
+          account.username?.trim() ? account.username : account.user_id,
+        ])
+      ),
+    [adminAccounts]
+  )
   const allLedger = useMemo(
     () =>
       adminAccounts
@@ -685,7 +695,7 @@ export function AdminWorkspace({
                               {item.price_cny.toFixed(2)} 元 = {item.credits.toLocaleString()} 点
                             </div>
                             <div className="mt-1 text-xs text-slate-400">
-                              {item.used_by ? `使用人：${item.used_by}` : "未使用"}
+                              {item.used_by ? `使用人：${accountNameById.get(item.used_by) ?? item.used_by}` : "未使用"}
                               {item.used_at ? ` · ${new Date(item.used_at).toLocaleString("zh-CN")}` : ""}
                             </div>
                           </div>
