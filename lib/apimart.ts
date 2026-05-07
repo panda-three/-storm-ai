@@ -97,6 +97,13 @@ export function normalizeVideoQuality(quality: string) {
   return value === "480p" ? "480p" : "720p"
 }
 
+export function normalizeVideoResolution(quality: string) {
+  const value = quality.trim().toLowerCase()
+  if (value === "4k") return "4k"
+  if (value === "1080p") return "1080p"
+  return "720p"
+}
+
 export function normalizeTaskId(data: unknown) {
   if (!data || typeof data !== "object") return ""
 
@@ -166,12 +173,15 @@ export async function uploadApimartImage(file: ApimartUploadFile) {
 export async function createVideoGeneration(request: ApimartVideoRequest): Promise<GenerationResponse> {
   const model = videoModelMap[request.model] ?? request.model
   const apiKey = process.env.APIMART_API_KEY
+  const isVeoModel = model === "veo3.1-fast"
   const payload = {
     model,
     prompt: request.prompt,
     aspect_ratio: request.aspectRatio,
     duration: request.duration,
-    quality: normalizeVideoQuality(request.quality),
+    ...(isVeoModel
+      ? { resolution: normalizeVideoResolution(request.quality) }
+      : { quality: normalizeVideoQuality(request.quality) }),
     ...(request.referenceImages?.length ? { image_urls: request.referenceImages.map((image) => image.url) } : {}),
   }
 

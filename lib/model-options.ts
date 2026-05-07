@@ -50,7 +50,7 @@ export const videoModelSettings: Record<
   "Gemini Veo 3.1 Fast": {
     aspectRatios: ["16:9", "9:16"],
     durations: ["8 秒"],
-    qualities: ["480P", "720P"],
+    qualities: ["720P", "1080P", "4K"],
   },
   "Grok Imagine Video": {
     aspectRatios: ["16:9", "9:16", "1:1", "3:2", "2:3"],

@@ -1062,6 +1062,18 @@ function VideoWorkspace({
   })
   const estimatedCredits = currentPricing ? calculatePricingCredits(currentPricing) : null
 
+  useEffect(() => {
+    if (!modelSettings.durations.includes(duration)) {
+      setDuration(modelSettings.durations[0])
+    }
+    if (!modelSettings.qualities.includes(quality)) {
+      setQuality(modelSettings.qualities[0])
+    }
+    if (!modelSettings.aspectRatios.includes(aspectRatio)) {
+      setAspectRatio(modelSettings.aspectRatios[0])
+    }
+  }, [aspectRatio, duration, modelSettings, quality])
+
   const handlePromptChange = (value: string) => {
     setPrompt(value)
     if (error === "请先输入视频提示词。" && value.trim()) {

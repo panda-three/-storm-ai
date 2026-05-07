@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { createVideoGeneration, normalizeVideoDuration, uploadApimartImage } from "@/lib/apimart"
+import { videoModelSettings } from "@/lib/model-options"
 
 const maxReferenceImages = 4
 const maxReferenceImageBytes = 10 * 1024 * 1024
@@ -21,6 +22,19 @@ export async function POST(request: Request) {
     const quality = String(getValue("quality") ?? "720P")
     const aspectRatio = String(getValue("aspectRatio") ?? "16:9")
     const rawReferenceImages = body instanceof FormData ? getReferenceImageLogs(body) : []
+    const modelSettings = videoModelSettings[model]
+
+    if (!modelSettings) {
+      return NextResponse.json({ ok: false, error: "请选择有效视频模型。" }, { status: 400 })
+    }
+
+    if (!modelSettings.qualities.includes(quality)) {
+      return NextResponse.json({ ok: false, error: "请选择当前模型支持的视频清晰度。" }, { status: 400 })
+    }
+
+    if (!modelSettings.aspectRatios.includes(aspectRatio)) {
+      return NextResponse.json({ ok: false, error: "请选择当前模型支持的视频比例。" }, { status: 400 })
+    }
 
     logGenerateVideo("input", {
       contentType: body instanceof FormData ? "multipart/form-data" : "application/json",
