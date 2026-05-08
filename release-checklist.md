@@ -9,6 +9,8 @@
 - `MENGFACTORY_BASE_URL`：默认 `https://api.mengfactory.cn`。
 - `SUPABASE_SERVICE_ROLE_KEY`：服务端专用 Supabase service role key，不能暴露到前端。
 - `SUPABASE_GENERATED_IMAGES_BUCKET`：生成图片存储桶，默认 `generated-images`。
+- `CRON_SECRET`：外部定时器调用 `/api/cron/sync-apimart-tasks` 时使用的 Bearer 密钥。
+- `APIMART_SYNC_BATCH_SIZE`：每次同步的 APIMart 任务数量，建议先用 `20`。
 
 ## 功能验收
 
@@ -25,6 +27,7 @@
 - 将本地 `localStorage` 持久化替换为登录账户和数据库。
 - 配置生产环境变量，确认 API Key 不进入前端代码和仓库。
 - 确认 APIMart 额度、并发限制、失败重试和超时策略。
+- Hobby 版 Vercel Cron 不能每分钟运行；需要用外部 cron 服务每分钟调用 `/api/cron/sync-apimart-tasks`，请求头为 `Authorization: Bearer <CRON_SECRET>`。
 
 ## 验证命令
 
