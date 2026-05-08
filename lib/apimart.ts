@@ -215,7 +215,18 @@ export async function getTaskStatus(taskId: string): Promise<NormalizedTaskStatu
   }
 
   const response = await apimartGet(`/tasks/${encodeURIComponent(taskId)}?language=zh`)
-  return normalizeTaskStatus(taskId, response)
+  const result = normalizeTaskStatus(taskId, response)
+
+  if (isApimartRateLimitError(result.taskError)) {
+    throw new Error(result.taskError)
+  }
+
+  return result
+}
+
+export function isApimartRateLimitError(message: string) {
+  const value = message.toLowerCase()
+  return value.includes("request rate limit") || value.includes("rate limit") || value.includes("too many requests")
 }
 
 async function apimartFetch(path: string, body: Record<string, unknown>) {
@@ -479,6 +490,14 @@ function describeApimartError(error: unknown) {
 
   if (details.includes("ECONNREFUSED")) {
     return "无法连接 APIMart：网络连接被拒绝，请检查代理或防火墙设置。"
+  }
+
+  if (
+    details.includes("Client network socket disconnected before secure TLS connection was established") ||
+    details.includes("ECONNRESET") ||
+    details.includes("TLS connection")
+  ) {
+    return `无法连接 APIMart：TLS 连接在建立前被断开，请检查 APIMART_PROXY_URL、代理客户端和网络出口。${details}`
   }
 
   if (details.includes("fetch failed")) {

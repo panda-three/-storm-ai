@@ -5,10 +5,14 @@
 - `APIMART_API_KEY`：APIMart 服务端密钥，只能放在服务端环境变量中。
 - `APIMART_BASE_URL`：默认 `https://api.apimart.ai/v1`。
 - `APIMART_PROXY_URL`：本地开发如需代理可填 `http://127.0.0.1:7890`，线上通常留空。
+- `MENGFACTORY_API_KEY`：MengFactory 服务端密钥，只能放在服务端环境变量中。
+- `MENGFACTORY_BASE_URL`：默认 `https://api.mengfactory.cn`。
+- `SUPABASE_SERVICE_ROLE_KEY`：服务端专用 Supabase service role key，不能暴露到前端。
+- `SUPABASE_GENERATED_IMAGES_BUCKET`：生成图片存储桶，默认 `generated-images`。
 
 ## 功能验收
 
-- 生图：选择 Gemini Nano Banana Pro 或 GPT-Image-2，提交任务后能轮询并展示真实图片。
+- 生图：选择 Gemini Nano Banana Pro 或 GPT-Image-2，提交任务后能轮询并展示真实图片；选择 Gemini 3.1 Flash Image Preview 后能直接返回 Supabase Storage 图片 URL。
 - 视频：选择 VEO3 或 Grok Imagine，提交任务后能轮询并展示真实视频。
 - 历史项目：生成结果、任务 ID、预览 URL、失败原因可保存并查看。
 - 点数兑换：有效兑换码可增加点数，重复兑换会被拦截，兑换流水可查看。

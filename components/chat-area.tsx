@@ -2,13 +2,15 @@
 
 import { useEffect, useRef, useState } from "react"
 import type { WorkspaceSection } from "@/app/page"
+import type { ProjectItem, ProjectStatus, ProjectType } from "@/lib/project-history"
 import type { CreditPackage, CustomerServiceSettings, ModelPricing } from "@/lib/supabase"
-import { calculatePricingCredits, redeemCreditCode, refundCredits, spendCredits } from "@/lib/supabase"
+import { calculatePricingCredits, getSupabaseClient, redeemCreditCode } from "@/lib/supabase"
 import { formatLedgerDateTime } from "@/lib/date-time"
 import {
   getImageRatiosForSelection,
   imageModelOptions,
   imageModelSettings,
+  mengfactoryGeminiImageModelName,
   videoModelOptions,
   videoModelSettings,
 } from "@/lib/model-options"
@@ -93,6 +95,7 @@ const maxReferenceImages = 4
 const maxReferenceImageBytes = 10 * 1024 * 1024
 const supportedReferenceImageTypes = ["image/jpeg", "image/png", "image/webp"]
 const imageDefaultRatioOption = "默认"
+const activeTaskPolls = new Set<string>()
 
 interface ReferenceImage {
   file: File
@@ -140,6 +143,23 @@ async function copyText(text: string) {
   textarea.select()
   document.execCommand("copy")
   textarea.remove()
+}
+
+async function getCurrentAccessToken() {
+  const supabase = getSupabaseClient()
+  if (!supabase) {
+    throw new Error("Supabase 未配置。")
+  }
+
+  const { data, error } = await supabase.auth.getSession()
+  if (error) throw error
+
+  const token = data.session?.access_token
+  if (!token) {
+    throw new Error("请先登录后再生成。")
+  }
+
+  return token
 }
 
 function parseAspectRatio(ratio: string) {
@@ -254,75 +274,55 @@ function PricingLoadingNotice() {
 }
 
 async function pollTask({
-  intervalMs = 2500,
+  accessToken,
+  intervalMs = 15000,
   maxAttempts = 80,
   onUpdate,
   taskId,
 }: {
+  accessToken: string
   intervalMs?: number
   maxAttempts?: number
   onUpdate: (task: TaskStatusResponse) => void
   taskId: string
 }) {
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    await new Promise((resolve) => window.setTimeout(resolve, attempt === 0 ? 1200 : intervalMs))
+  if (activeTaskPolls.has(taskId)) return
 
-    const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`)
-    const task = (await response.json()) as TaskStatusResponse
+  activeTaskPolls.add(taskId)
 
-    if (!response.ok || !task.ok) {
-      throw new Error(task.error ?? "任务状态查询失败。")
+  try {
+    let retryDelay = intervalMs
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, attempt === 0 ? 5000 : retryDelay))
+
+      const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      })
+      const task = (await response.json()) as TaskStatusResponse
+
+      if (!response.ok || !task.ok) {
+        if (task.retryable || response.status === 429) {
+          retryDelay = Math.min(120000, intervalMs * 2 ** Math.min(attempt + 1, 3))
+          continue
+        }
+
+        throw new Error(task.error ?? "任务状态查询失败。")
+      }
+
+      retryDelay = intervalMs
+      onUpdate(task)
+
+      if (task.status === "completed" || task.status === "failed") {
+        return
+      }
     }
 
-    onUpdate(task)
-
-    if (task.status === "completed" || task.status === "failed") {
-      return
-    }
-  }
-
-  throw new Error("任务轮询超时，请稍后在历史项目中查看。")
-}
-
-type ProjectType = "生图" | "视频"
-type ProjectStatus = "已完成" | "生成中" | "失败"
-
-export interface ProjectItem {
-  id: string
-  title: string
-  type: ProjectType
-  status: ProjectStatus
-  time: string
-  model?: string
-  palette?: string
-  prompt?: string
-  previewLabel?: string
-  previewUrl?: string
-  taskId?: string
-  taskError?: string
-}
-
-export function normalizeProjectItem(project: ProjectItem): ProjectItem {
-  const rawStatus = String(project.status ?? "").trim().toLowerCase()
-  let status: ProjectStatus
-
-  if (["已完成", "completed", "complete", "success", "succeeded", "done", "finished"].includes(rawStatus)) {
-    status = "已完成"
-  } else if (["生成中", "submitted", "processing", "pending", "running"].includes(rawStatus)) {
-    status = "生成中"
-  } else if (["失败", "failed", "fail", "error"].includes(rawStatus)) {
-    status = "失败"
-  } else if (project.taskError) {
-    status = "失败"
-  } else if (project.previewUrl) {
-    status = "已完成"
-  } else {
-    status = "生成中"
-  }
-
-  return {
-    ...project,
-    status,
+    throw new TaskPollingTimeoutError()
+  } finally {
+    activeTaskPolls.delete(taskId)
   }
 }
 
@@ -364,13 +364,39 @@ interface TaskStatusResponse {
   imageUrls?: string[]
   videoUrl?: string
   error?: string
+  orphaned?: boolean
+  retryable?: boolean
   taskError?: string
+}
+
+class TaskPollingTimeoutError extends Error {
+  constructor() {
+    super("任务已转入后台继续生成，可稍后在历史项目中查看。")
+    this.name = "TaskPollingTimeoutError"
+  }
+}
+
+function isLegacyUpstreamTaskId(taskId: string | undefined) {
+  return Boolean(taskId?.startsWith("task_"))
+}
+
+function getTaskStatusError(task: TaskStatusResponse) {
+  return task.taskError || task.error || "任务状态查询失败。"
+}
+
+function isRateLimitTaskError(task: TaskStatusResponse) {
+  const message = getTaskStatusError(task).toLowerCase()
+  return message.includes("request rate limit") || message.includes("rate limit") || message.includes("too many requests")
+}
+
+function isOrphanedLegacyTaskMessage(message: string) {
+  return message.includes("旧任务没有本地生成记录") || message.includes("已停止自动查询")
 }
 
 function resolveImageTaskProject(task: TaskStatusResponse, fallbackUrl = "") {
   const imageUrls = task.imageUrls ?? []
   const previewUrl = imageUrls[0] ?? fallbackUrl
-  const status =
+  const status: ProjectStatus =
     task.status === "failed" || (task.status === "completed" && imageUrls.length === 0)
       ? "失败"
       : task.status === "completed"
@@ -388,7 +414,7 @@ function resolveImageTaskProject(task: TaskStatusResponse, fallbackUrl = "") {
 
 function resolveVideoTaskProject(task: TaskStatusResponse, fallbackUrl = "") {
   const previewUrl = task.videoUrl || fallbackUrl
-  const status =
+  const status: ProjectStatus =
     task.status === "failed" || (task.status === "completed" && !task.videoUrl)
       ? "失败"
       : task.status === "completed"
@@ -463,23 +489,64 @@ export function ChatArea({
 
   useEffect(() => {
     const pendingProjects = projects.filter((project) => project.status === "生成中" && project.taskId)
+    const projectsByTaskId = new Map<string, ProjectItem[]>()
     let active = true
     const timers: number[] = []
 
     pendingProjects.forEach((project) => {
+      if (!project.taskId) return
+      projectsByTaskId.set(project.taskId, [...(projectsByTaskId.get(project.taskId) ?? []), project])
+    })
+
+    projectsByTaskId.forEach((taskProjects, taskId) => {
+      const project = taskProjects[0]
       let attempts = 0
+      const stopTaskProjects = (taskError: string) => {
+        taskProjects.forEach((item) => {
+          onProjectUpdate({
+            ...item,
+            status: "失败",
+            taskError,
+          })
+        })
+      }
+
+      if (isLegacyUpstreamTaskId(taskId)) {
+        stopTaskProjects("旧任务没有本地生成记录，已停止自动查询。")
+        return
+      }
+
+      if (activeTaskPolls.has(taskId)) {
+        return
+      }
 
       const reconcile = () => {
         attempts += 1
-        fetch(`/api/tasks/${encodeURIComponent(project.taskId ?? "")}`)
+        getCurrentAccessToken()
+          .then((accessToken) =>
+            fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+              },
+            })
+          )
           .then(async (response) => {
             const task = (await response.json()) as TaskStatusResponse
 
             if (!response.ok || !task.ok) {
-              throw new Error(task.error ?? "任务状态查询失败。")
+              if (active && (response.status === 410 || task.orphaned) && isLegacyUpstreamTaskId(taskId)) {
+                stopTaskProjects(getTaskStatusError(task))
+                return
+              }
+
+              throw new Error(getTaskStatusError(task))
             }
 
             if (!active) return
+
+            if (isRateLimitTaskError(task)) {
+              throw new Error(getTaskStatusError(task))
+            }
 
             const resolved =
               project.type === "视频"
@@ -487,8 +554,8 @@ export function ChatArea({
                 : resolveImageTaskProject(task, project.previewUrl)
 
             if (resolved.status === "生成中") {
-              if (attempts < 60) {
-                timers.push(window.setTimeout(reconcile, 5000))
+              if (attempts < 20) {
+                timers.push(window.setTimeout(reconcile, 60000))
               }
               return
             }
@@ -501,18 +568,25 @@ export function ChatArea({
             })
           })
           .catch((error) => {
+            const message = getErrorMessage(error, "任务状态查询失败。")
+
+            if (active && isLegacyUpstreamTaskId(taskId) && isOrphanedLegacyTaskMessage(message)) {
+              stopTaskProjects(message)
+              return
+            }
+
             console.warn("[Task Reconcile] failed", {
-              error: getErrorMessage(error, "任务状态查询失败。"),
-              taskId: project.taskId,
+              error: message,
+              taskId,
             })
 
-            if (active && attempts < 60) {
-              timers.push(window.setTimeout(reconcile, 5000))
+            if (active && attempts < 6 && !isLegacyUpstreamTaskId(taskId)) {
+              timers.push(window.setTimeout(reconcile, Math.min(120000, 15000 * 2 ** Math.min(attempts, 3))))
             }
           })
       }
 
-      reconcile()
+      timers.push(window.setTimeout(reconcile, 30000))
     })
 
     return () => {
@@ -787,23 +861,7 @@ function ImageWorkspace({
     setIsGenerating(true)
     setResult(null)
 
-    const billingReference = `generate_image_${Date.now()}`
-    const billingReason = `AI 生图 · ${model} · ${quality}`
-    let billed = false
-
     try {
-      try {
-        await spendCredits({
-          amount: estimatedCredits,
-          reason: billingReason,
-          reference: billingReference,
-        })
-      } catch (error) {
-        throw new Error(`扣点失败：${getErrorMessage(error, "请稍后重试。")}`, { cause: error })
-      }
-      billed = true
-      await onAccountRefresh()
-
       const formData = new FormData()
       formData.append("prompt", trimmedPrompt)
       formData.append("model", model)
@@ -815,8 +873,12 @@ function ImageWorkspace({
       referenceImages.forEach((image) => {
         formData.append("referenceImages", image.file, image.name)
       })
+      const accessToken = await getCurrentAccessToken()
 
       const response = await fetch("/api/generate/image", {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
         method: "POST",
         body: formData,
       }).catch((error) => {
@@ -828,6 +890,10 @@ function ImageWorkspace({
         throw new Error(getErrorMessage(data, "生图任务提交失败。"))
       }
 
+      await onAccountRefresh()
+
+      const imageUrls = Array.isArray(data.imageUrls) ? data.imageUrls.filter((url: unknown) => typeof url === "string") : []
+      const isCompleted = data.status === "completed" && imageUrls.length > 0
       const generatedResult: ImageResult = {
         id: `image-${Date.now()}`,
         prompt: trimmedPrompt,
@@ -835,16 +901,22 @@ function ImageWorkspace({
         quality,
         ratio: resolvedRatio,
         createdAt: "刚刚",
-        imageUrl: "",
+        imageUrl: imageUrls[0] ?? "",
         palette: "from-indigo-500 via-sky-400 to-emerald-300",
-        status: "生成中",
+        status: isCompleted ? "已完成" : "生成中",
         taskId: data.taskId,
-        progress: 0,
+        progress: isCompleted ? 100 : 0,
       }
 
       setResult(generatedResult)
       onImageGenerated(generatedResult)
+
+      if (isCompleted) {
+        return
+      }
+
       pollTask({
+        accessToken,
         taskId: data.taskId,
         onUpdate: (task) => {
           const resolved = resolveImageTaskProject(task, generatedResult.imageUrl)
@@ -871,37 +943,19 @@ function ImageWorkspace({
             taskError: resolved.taskError,
           })
 
-          if (resolved.status === "失败") {
-            refundCredits({
-              amount: estimatedCredits,
-              reason: `${billingReason}失败退款`,
-              reference: billingReference,
-            })
-              .then(onAccountRefresh)
-              .catch((error) => {
-                setError(getErrorMessage(error, "任务失败，但自动退款失败，请联系管理员。"))
-              })
+          if (resolved.status === "失败" || resolved.status === "已完成") {
+            onAccountRefresh().catch(() => undefined)
           }
         },
       }).catch((error) => {
-        refundCredits({
-          amount: estimatedCredits,
-          reason: `${billingReason}状态查询失败退款`,
-          reference: billingReference,
-        })
-          .then(onAccountRefresh)
-          .catch(() => undefined)
-        setError(getErrorMessage(error, "任务状态查询失败。"))
+        setError(
+          error instanceof TaskPollingTimeoutError
+            ? error.message
+            : getErrorMessage(error, "任务状态查询失败。")
+        )
       })
     } catch (error) {
-      if (billed) {
-        await refundCredits({
-          amount: estimatedCredits,
-          reason: `${billingReason}提交失败退款`,
-          reference: billingReference,
-        }).catch(() => undefined)
-        await onAccountRefresh()
-      }
+      await onAccountRefresh().catch(() => undefined)
       setError(getErrorMessage(error, "生图任务提交失败。"))
     } finally {
       setIsGenerating(false)
@@ -1181,23 +1235,7 @@ function VideoWorkspace({
     setIsGenerating(true)
     setResult(null)
 
-    const billingReference = `generate_video_${Date.now()}`
-    const billingReason = `AI 视频 · ${model} · ${duration} · ${quality} · ${aspectRatio}`
-    let billed = false
-
     try {
-      try {
-        await spendCredits({
-          amount: estimatedCredits,
-          reason: billingReason,
-          reference: billingReference,
-        })
-      } catch (error) {
-        throw new Error(`扣点失败：${getErrorMessage(error, "请稍后重试。")}`, { cause: error })
-      }
-      billed = true
-      await onAccountRefresh()
-
       const formData = new FormData()
       formData.append("prompt", trimmedPrompt)
       formData.append("model", model)
@@ -1207,8 +1245,12 @@ function VideoWorkspace({
       referenceImages.forEach((image) => {
         formData.append("referenceImages", image.file, image.name)
       })
+      const accessToken = await getCurrentAccessToken()
 
       const response = await fetch("/api/generate/video", {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
         method: "POST",
         body: formData,
       }).catch((error) => {
@@ -1219,6 +1261,8 @@ function VideoWorkspace({
       if (!response.ok || !data.ok) {
         throw new Error(getErrorMessage(data, "视频任务提交失败。"))
       }
+
+      await onAccountRefresh()
 
       const generatedResult: VideoResult = {
         id: `video-${Date.now()}`,
@@ -1240,6 +1284,7 @@ function VideoWorkspace({
       setResult(generatedResult)
       onVideoGenerated(generatedResult)
       pollTask({
+        accessToken,
         taskId: data.taskId,
         onUpdate: (task) => {
           const resolved = resolveVideoTaskProject(task, generatedResult.videoUrl)
@@ -1267,37 +1312,19 @@ function VideoWorkspace({
             taskError: nextResult.taskError,
           })
 
-          if (resolved.status === "失败") {
-            refundCredits({
-              amount: estimatedCredits,
-              reason: `${billingReason}失败退款`,
-              reference: billingReference,
-            })
-              .then(onAccountRefresh)
-              .catch((error) => {
-                setError(getErrorMessage(error, "任务失败，但自动退款失败，请联系管理员。"))
-              })
+          if (resolved.status === "失败" || resolved.status === "已完成") {
+            onAccountRefresh().catch(() => undefined)
           }
         },
       }).catch((error) => {
-        refundCredits({
-          amount: estimatedCredits,
-          reason: `${billingReason}状态查询失败退款`,
-          reference: billingReference,
-        })
-          .then(onAccountRefresh)
-          .catch(() => undefined)
-        setError(getErrorMessage(error, "任务状态查询失败。"))
+        setError(
+          error instanceof TaskPollingTimeoutError
+            ? error.message
+            : getErrorMessage(error, "任务状态查询失败。")
+        )
       })
     } catch (error) {
-      if (billed) {
-        await refundCredits({
-          amount: estimatedCredits,
-          reason: `${billingReason}提交失败退款`,
-          reference: billingReference,
-        }).catch(() => undefined)
-        await onAccountRefresh()
-      }
+      await onAccountRefresh().catch(() => undefined)
       setError(getErrorMessage(error, "视频任务提交失败。"))
     } finally {
       setIsGenerating(false)
@@ -1902,20 +1929,30 @@ function OptionGroup({
   options: string[]
   selected?: string
 }) {
+  const isModelGroup = label.includes("模型")
+
   return (
     <div>
       <label className="text-sm font-medium text-slate-700">{label}</label>
-      <div className="mt-2 flex flex-wrap gap-2">
+      <div className={isModelGroup ? "mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3" : "mt-2 flex flex-wrap gap-2"}>
         {options.map((option, index) => {
           const isSelected = selected ? selected === option : index === 0
 
           return (
             <button
-              className={
+              className={[
+                "cursor-pointer border text-center text-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40",
+                isModelGroup
+                  ? "grid min-h-14 w-full place-items-center rounded-xl px-3 py-2.5 font-medium leading-snug shadow-sm hover:-translate-y-0.5 hover:shadow-md"
+                  : "rounded-md px-3 py-2",
                 isSelected
-                  ? "cursor-pointer rounded-md border border-indigo-600 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-700"
-                  : "cursor-pointer rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
-              }
+                  ? isModelGroup
+                    ? "border-indigo-500 bg-indigo-50 text-indigo-700 shadow-indigo-100 ring-1 ring-indigo-500/15"
+                    : "border-indigo-600 bg-indigo-50 font-medium text-indigo-700"
+                  : isModelGroup
+                    ? "border-slate-200 bg-white text-slate-600 shadow-slate-100 hover:border-indigo-200 hover:bg-indigo-50/50 hover:text-indigo-700"
+                    : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50",
+              ].join(" ")}
               key={option}
               onClick={() => onChange?.(option)}
               type="button"

@@ -1,4 +1,4 @@
-import type { ProjectItem } from "@/components/chat-area"
+import type { ProjectItem } from "@/lib/project-history"
 
 const STORAGE_KEY = "storm-ai-local-account-v1"
 

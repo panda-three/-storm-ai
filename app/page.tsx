@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react"
 import type { SupabaseClient, User } from "@supabase/supabase-js"
 import { AuthPanel } from "@/components/auth-panel"
 import { Sidebar } from "@/components/sidebar"
-import { ChatArea, normalizeProjectItem, type ProjectItem } from "@/components/chat-area"
+import { ChatArea } from "@/components/chat-area"
 import { AdminWorkspace } from "@/components/admin-workspace"
 import {
   createDefaultAccount,
@@ -12,6 +12,7 @@ import {
   saveLocalAccount,
   type LocalAccountData,
 } from "@/lib/local-store"
+import { mergeProjectHistories, normalizeProjectItem, type ProjectItem } from "@/lib/project-history"
 import {
   type CreditPackage,
   type CustomerServiceSettings,
@@ -51,6 +52,32 @@ async function clearLocalSupabaseSession(supabase: SupabaseClient) {
 }
 
 export type WorkspaceSection = "image" | "video" | "history" | "credits" | "admin"
+
+async function loadServerHistoryProjects() {
+  const supabase = getSupabaseClient()
+  if (!supabase) return []
+
+  const { data, error } = await supabase.auth.getSession()
+  if (error) throw error
+
+  const token = data.session?.access_token
+  if (!token) return []
+
+  const response = await fetch("/api/history", {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  })
+  const payload = await response.json().catch(() => ({}))
+
+  if (!response.ok || !payload.ok) {
+    throw new Error(getErrorMessage(payload, "读取生成历史失败。"))
+  }
+
+  return Array.isArray(payload.projects)
+    ? payload.projects.filter((item: unknown): item is ProjectItem => typeof item === "object" && item !== null).map(normalizeProjectItem)
+    : []
+}
 
 export default function Home() {
   const [account, setAccount] = useState<LocalAccountData>(() => loadLocalAccount())
@@ -136,13 +163,17 @@ export default function Home() {
 
       try {
         setSyncError("")
-        const remoteAccount = await loadSupabaseAccount(user.id)
+        const [remoteAccount, serverProjects] = await Promise.all([
+          loadSupabaseAccount(user.id),
+          loadServerHistoryProjects(),
+        ])
         if (!active) return
 
+        const accountProjects = (remoteAccount?.projects ?? []).map(normalizeProjectItem)
         setAccount({
           creditBalance: remoteAccount?.credit_balance ?? 0,
           ledger: remoteAccount?.ledger ?? [],
-          projects: (remoteAccount?.projects ?? []).map(normalizeProjectItem),
+          projects: mergeProjectHistories(serverProjects, accountProjects),
           redeemedCodes: remoteAccount?.redeemed_codes ?? [],
           role: remoteAccount?.role ?? "user",
           userId: user.id,
@@ -164,15 +195,19 @@ export default function Home() {
 
     try {
       setSyncError("")
-      const remoteAccount = await loadSupabaseAccount(user.id)
-      setAccount({
+      const [remoteAccount, serverProjects] = await Promise.all([
+        loadSupabaseAccount(user.id),
+        loadServerHistoryProjects(),
+      ])
+      const accountProjects = (remoteAccount?.projects ?? []).map(normalizeProjectItem)
+      setAccount((current) => ({
         creditBalance: remoteAccount?.credit_balance ?? 0,
         ledger: remoteAccount?.ledger ?? [],
-        projects: (remoteAccount?.projects ?? []).map(normalizeProjectItem),
+        projects: mergeProjectHistories(serverProjects, mergeProjectHistories(current.projects, accountProjects)),
         redeemedCodes: remoteAccount?.redeemed_codes ?? [],
         role: remoteAccount?.role ?? "user",
         userId: user.id,
-      })
+      }))
     } catch (error) {
       setSyncError(getErrorMessage(error, "刷新 Supabase 数据失败。"))
     }
@@ -275,6 +310,14 @@ export default function Home() {
 
   if (!user) {
     return <AuthPanel onAuthed={() => undefined} />
+  }
+
+  if (account.userId !== user.id) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#f7f8fb] text-sm text-slate-500">
+        正在加载账户...
+      </div>
+    )
   }
 
   return (
