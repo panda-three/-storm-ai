@@ -10,7 +10,6 @@ import {
   getImageRatiosForSelection,
   imageModelOptions,
   imageModelSettings,
-  mengfactoryGeminiImageModelName,
   videoModelOptions,
   videoModelSettings,
 } from "@/lib/model-options"
@@ -115,11 +114,11 @@ function getAssetExtension(url: string, fallback: string) {
 }
 
 function downloadAsset(url: string, filename: string) {
+  const downloadUrl = `/api/download?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename)}`
   const link = document.createElement("a")
-  link.href = url
+  link.href = downloadUrl
   link.download = filename
   link.rel = "noreferrer"
-  link.target = "_blank"
   document.body.appendChild(link)
   link.click()
   link.remove()
