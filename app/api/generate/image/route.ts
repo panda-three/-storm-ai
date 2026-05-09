@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { createGenerationJob, updateGenerationJob } from "@/lib/generation-jobs"
+import { createGenerationJob, updateGenerationJob, type GenerationJobStatus } from "@/lib/generation-jobs"
 import { createImageGeneration, normalizeImageResolution, uploadApimartImage } from "@/lib/apimart"
 import { createMengfactoryImage } from "@/lib/mengfactory"
 import {
@@ -9,6 +9,8 @@ import {
 import {
   getSupabaseServerClient,
   describeServerError,
+  deleteGeneratedImageByPublicUrl,
+  recordFreeGenerationUsage,
   refundGenerationCredits,
   requireAuthenticatedUser,
   spendGenerationCredits,
@@ -30,6 +32,7 @@ export async function POST(request: Request) {
   let billingAmount = 0
   let billingReason = ""
   let jobId = ""
+  let refundedAmount = 0
   let userId = ""
 
   try {
@@ -47,6 +50,7 @@ export async function POST(request: Request) {
     const model = String(getValue("model") ?? "Gemini Nano Banana Pro")
     const quality = String(getValue("quality") ?? "2K")
     const ratio = String(getValue("ratio") ?? "1:1")
+    const imageCount = parseImageCount(getValue("imageCount"))
     const referenceImages = body instanceof FormData ? body.getAll("referenceImages").filter(isImageFile) : []
 
     if (!isValidImageRatioForQuality(model, quality, ratio)) {
@@ -66,9 +70,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "当前模型参数未配置价格，请联系管理员配置后再生成。" }, { status: 400 })
     }
 
-    billingAmount = calculatePricingCredits(pricing)
+    billingAmount = calculatePricingCredits(pricing) * imageCount
     billingReference = `generate_image_${Date.now()}_${crypto.randomUUID()}`
-    billingReason = `AI 生图 · ${model} · ${quality}`
+    billingReason = `AI 生图 · ${model} · ${quality} · ${imageCount} 张`
+    const membershipCoversQuality = await hasActiveImageMembership({
+      quality,
+      userId,
+    })
 
     logGenerateImage("input", {
       contentType: body instanceof FormData ? "multipart/form-data" : "application/json",
@@ -76,20 +84,27 @@ export async function POST(request: Request) {
       model,
       quality,
       ratio,
+      imageCount,
       referenceImages: referenceImages.map(toFileLog),
       userId,
     })
 
-    await spendGenerationCredits({
-      amount: billingAmount,
-      reason: billingReason,
-      reference: billingReference,
-      userId,
-    })
-    billed = true
+    if (membershipCoversQuality) {
+      billingAmount = 0
+      billingReason = `${billingReason} · 会员免费`
+    } else {
+      await spendGenerationCredits({
+        amount: billingAmount,
+        reason: billingReason,
+        reference: billingReference,
+        userId,
+      })
+      billed = true
+    }
 
     const job = await createGenerationJob({
       amount: billingAmount,
+      expectedResultCount: imageCount,
       model,
       prompt,
       provider: isMengfactoryGeminiImageModel(model) ? "mengfactory" : "apimart",
@@ -99,6 +114,14 @@ export async function POST(request: Request) {
     })
     jobId = job.id
 
+    if (membershipCoversQuality) {
+      await recordFreeGenerationUsage({
+        reason: billingReason,
+        reference: billingReference,
+        userId,
+      })
+    }
+
     if (isMengfactoryGeminiImageModel(model)) {
       const referenceBuffers = await Promise.all(
         referenceImages.map(async (image) => ({
@@ -106,33 +129,79 @@ export async function POST(request: Request) {
           mimeType: image.type,
         }))
       )
-      const generated = await createMengfactoryImage({
-        model,
-        prompt,
-        quality,
-        ratio,
-        referenceImages: referenceBuffers,
-      })
-      const imageUrl = await uploadGeneratedImage({
-        buffer: generated.buffer,
-        contentType: generated.mimeType,
-        userId,
-      })
+      const generatedImages = await Promise.allSettled(
+        Array.from({ length: imageCount }, () =>
+          createMengfactoryImage({
+            model,
+            prompt,
+            quality,
+            ratio,
+            referenceImages: referenceBuffers,
+          })
+        )
+      )
+      const successfulImages = generatedImages
+        .filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof createMengfactoryImage>>> => result.status === "fulfilled")
+        .map((result) => result.value)
+      const imageUrls: string[] = []
 
-      await updateGenerationJob(job.id, {
-        result_urls: [imageUrl],
-        status: "completed",
-      })
+      try {
+        for (const generated of successfulImages) {
+          imageUrls.push(
+            await uploadGeneratedImage({
+              buffer: generated.buffer,
+              contentType: generated.mimeType,
+              userId,
+            })
+          )
+        }
 
-      return NextResponse.json({
-        ok: true,
-        mode: "mengfactory",
-        taskId: job.id,
-        status: "completed",
-        type: "image",
-        imageUrls: [imageUrl],
-        progress: 100,
-      })
+        if (imageUrls.length === 0) {
+          throw new Error("图片生成失败，未返回可用结果。")
+        }
+
+        const status: GenerationJobStatus = imageUrls.length < imageCount ? "partial_completed" : "completed"
+        const taskError =
+          status === "partial_completed"
+            ? buildPartialImageMessage({
+                amount: billingAmount,
+                expectedResultCount: imageCount,
+                successCount: imageUrls.length,
+              })
+            : null
+
+        if (status === "partial_completed") {
+          const partialRefundAmount = calculatePartialRefundAmount(billingAmount, imageUrls.length, imageCount)
+          await refundImageGenerationCredits({
+            amount: partialRefundAmount,
+            reason: `AI 生图部分失败退款 · ${model} · ${imageCount - imageUrls.length}/${imageCount} 张`,
+            reference: buildPartialRefundReference(billingReference, imageUrls.length, imageCount),
+            userId,
+          })
+          refundedAmount += partialRefundAmount
+        }
+
+        await updateGenerationJob(job.id, {
+          completed_at: new Date().toISOString(),
+          result_urls: imageUrls,
+          status,
+          task_error: taskError,
+        })
+
+        return NextResponse.json({
+          ok: true,
+          mode: "mengfactory",
+          taskId: job.id,
+          status,
+          type: "image",
+          imageUrls,
+          progress: 100,
+          taskError: taskError ?? "",
+        })
+      } catch (error) {
+        await Promise.all(imageUrls.map((url) => deleteGeneratedImageByPublicUrl(url)))
+        throw error
+      }
     }
 
     const imageUrls = (
@@ -150,6 +219,7 @@ export async function POST(request: Request) {
       imageUrls,
       model,
       prompt,
+      imageCount,
       size: ratio,
       resolution: normalizeImageResolution(quality, model),
     }
@@ -186,9 +256,10 @@ export async function POST(request: Request) {
       }).catch(() => undefined)
     }
 
-    if (billed && userId && billingReference && billingAmount > 0) {
+    const remainingRefundAmount = Math.max(0, billingAmount - refundedAmount)
+    if (billed && userId && billingReference && remainingRefundAmount > 0) {
       await refundGenerationCredits({
-        amount: billingAmount,
+        amount: remainingRefundAmount,
         reason: `${billingReason || "AI 生图"}提交失败退款`,
         reference: billingReference,
         userId,
@@ -205,6 +276,62 @@ export async function POST(request: Request) {
   }
 }
 
+function parseImageCount(value: FormDataEntryValue | unknown) {
+  const parsed = typeof value === "number" ? value : Number.parseInt(String(value ?? "1"), 10)
+
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 4) {
+    throw new Error("生成张数只能选择 1 到 4 张。")
+  }
+
+  return parsed
+}
+
+function calculatePartialRefundAmount(amount: number, successCount: number, expectedResultCount: number) {
+  if (amount <= 0 || expectedResultCount <= 0) return 0
+  const failedCount = Math.max(0, expectedResultCount - successCount)
+  return Math.floor((amount * failedCount) / expectedResultCount)
+}
+
+function buildPartialRefundReference(reference: string, successCount: number, expectedResultCount: number) {
+  return `${reference}_partial_${successCount}_of_${expectedResultCount}`
+}
+
+function buildPartialImageMessage({
+  amount,
+  expectedResultCount,
+  successCount,
+}: {
+  amount: number
+  expectedResultCount: number
+  successCount: number
+}) {
+  const failedCount = Math.max(0, expectedResultCount - successCount)
+  const refundAmount = calculatePartialRefundAmount(amount, successCount, expectedResultCount)
+  const refundText = refundAmount > 0 ? `已退还 ${refundAmount.toLocaleString()} 点。` : "本次未扣点，无需退款。"
+  return `已生成 ${successCount}/${expectedResultCount} 张，失败 ${failedCount} 张，${refundText}`
+}
+
+async function refundImageGenerationCredits({
+  amount,
+  reason,
+  reference,
+  userId,
+}: {
+  amount: number
+  reason: string
+  reference: string
+  userId: string
+}) {
+  if (amount <= 0) return
+
+  await refundGenerationCredits({
+    amount,
+    reason,
+    reference,
+    userId,
+  })
+}
+
 async function loadImagePricing({ model, quality }: { model: string; quality: string }) {
   const { data, error } = await getSupabaseServerClient()
     .from("model_pricing")
@@ -213,12 +340,36 @@ async function loadImagePricing({ model, quality }: { model: string; quality: st
     .eq("type", "image")
     .eq("model", model)
     .eq("quality", quality)
-    .maybeSingle()
+    .order("updated_at", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(1)
 
   if (error) {
     throw new Error(describeServerError(error, "读取图片模型价格失败。"), { cause: error })
   }
-  return data as ModelPricing | null
+  return (data?.[0] ?? null) as ModelPricing | null
+}
+
+async function hasActiveImageMembership({ quality, userId }: { quality: string; userId: string }) {
+  const { data, error } = await getSupabaseServerClient()
+    .from("user_accounts")
+    .select("membership_tier, membership_expires_at, membership_free_image_qualities")
+    .eq("user_id", userId)
+    .maybeSingle()
+
+  if (error) {
+    throw new Error(describeServerError(error, "读取会员权益失败。"), { cause: error })
+  }
+
+  const expiresAt = typeof data?.membership_expires_at === "string" ? data.membership_expires_at : ""
+  const qualities = Array.isArray(data?.membership_free_image_qualities) ? data.membership_free_image_qualities : []
+
+  return Boolean(
+    data?.membership_tier &&
+      expiresAt &&
+      new Date(expiresAt).getTime() > Date.now() &&
+      qualities.includes(quality)
+  )
 }
 
 function validateReferenceImages(referenceImages: File[]) {

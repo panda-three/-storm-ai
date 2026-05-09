@@ -1,7 +1,8 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { type DragEvent, useEffect, useRef, useState } from "react"
 import type { WorkspaceSection } from "@/app/page"
+import type { MembershipTier } from "@/lib/local-store"
 import type { ProjectItem, ProjectStatus, ProjectType } from "@/lib/project-history"
 import type { CreditPackage, CustomerServiceSettings, ModelPricing } from "@/lib/supabase"
 import { calculatePricingCredits, getSupabaseClient, redeemCreditCode } from "@/lib/supabase"
@@ -37,6 +38,7 @@ import {
   WalletCards,
   X,
 } from "lucide-react"
+import { cn } from "@/lib/utils"
 
 type ChatWorkspaceSection = Exclude<WorkspaceSection, "admin">
 
@@ -52,6 +54,9 @@ interface ChatAreaProps {
     createdAt: string
     id: string
   }>
+  membershipExpiresAt: string | null
+  membershipFreeImageQualities: string[]
+  membershipTier: MembershipTier | null
   onProjectAdd: (item: ProjectItem) => void
   onProjectDelete: (id: string) => void
   onProjectUpdate: (item: ProjectItem) => void
@@ -94,6 +99,7 @@ const maxReferenceImages = 4
 const maxReferenceImageBytes = 10 * 1024 * 1024
 const supportedReferenceImageTypes = ["image/jpeg", "image/png", "image/webp"]
 const imageDefaultRatioOption = "默认"
+const imageCountOptions = ["1", "2", "3", "4"]
 const activeTaskPolls = new Set<string>()
 const taskInitialPollDelayMs = 15000
 const taskEarlyPollIntervalMs = 15000
@@ -140,6 +146,10 @@ function downloadVideoDirect(url: string, filename: string) {
   document.body.appendChild(link)
   link.click()
   link.remove()
+}
+
+function hasDraggedFiles(event: DragEvent<HTMLElement>) {
+  return Array.from(event.dataTransfer.types).includes("Files")
 }
 
 function openAsset(url: string) {
@@ -241,7 +251,18 @@ function getErrorMessage(error: unknown, fallback: string) {
 }
 
 function getOptionLabel(option: string) {
+  if (option === "Gemini 3.1 Flash Image Preview") return "Gemini3香蕉pro"
+  if (option === "1") return "一张"
+  if (option === "2") return "两张"
+  if (option === "3") return "三张"
+  if (option === "4") return "四张"
+
   return option === "auto" ? "默认" : option
+}
+
+function parseImageCount(value: string) {
+  const parsed = Number.parseInt(value, 10)
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 4 ? parsed : 1
 }
 
 function findModelPricing(
@@ -266,7 +287,38 @@ function findModelPricing(
   })
 }
 
-function PricingNotice({ estimatedCredits }: { estimatedCredits: number | null }) {
+function isMembershipActive(membershipTier: MembershipTier | null, membershipExpiresAt: string | null) {
+  return Boolean(membershipTier && membershipExpiresAt && new Date(membershipExpiresAt).getTime() > Date.now())
+}
+
+function getMembershipLabel(membershipTier: MembershipTier | null) {
+  if (membershipTier === "svip") return "SVIP"
+  if (membershipTier === "vip") return "VIP"
+  return "VIP"
+}
+
+function formatMembershipExpiresAt(expiresAt: string | null) {
+  if (!expiresAt) return ""
+  return new Date(expiresAt).toLocaleString("zh-CN", {
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  })
+}
+
+function PricingNotice({
+  estimatedCredits,
+  imageCount,
+  membershipCoversQuality = false,
+}: {
+  estimatedCredits: number | null
+  imageCount?: number
+  membershipCoversQuality?: boolean
+}) {
+  const countLabel = imageCount && imageCount > 1 ? `，生成 ${imageCount} 张` : ""
+
   return (
     <div
       className={
@@ -277,7 +329,9 @@ function PricingNotice({ estimatedCredits }: { estimatedCredits: number | null }
     >
       {estimatedCredits === null
         ? "当前参数未配置价格，暂不能提交生成。"
-        : `预计消耗：${estimatedCredits.toLocaleString()} 点（约 ${(estimatedCredits / 100).toFixed(2)} 元）`}
+        : membershipCoversQuality
+          ? `预计消耗：0 点（会员权益免费${countLabel}）`
+          : `预计消耗：${estimatedCredits.toLocaleString()} 点（约 ${(estimatedCredits / 100).toFixed(2)} 元${countLabel}）`}
     </div>
   )
 }
@@ -330,7 +384,7 @@ async function pollTask({
 
       onUpdate(task)
 
-      if (task.status === "completed" || task.status === "failed") {
+      if (task.status === "completed" || task.status === "failed" || task.status === "partial_completed") {
         return
       }
 
@@ -356,11 +410,14 @@ interface ImageResult {
   quality: string
   ratio: string
   createdAt: string
+  imageCount: number
   imageUrl: string
+  imageUrls: string[]
   palette: string
   status: ProjectStatus
   taskId: string
   progress: number
+  taskError?: string
 }
 
 interface VideoResult {
@@ -382,7 +439,7 @@ interface VideoResult {
 
 interface TaskStatusResponse {
   ok: boolean
-  status?: "submitted" | "processing" | "completed" | "failed"
+  status?: "submitted" | "processing" | "completed" | "failed" | "partial_completed"
   progress?: number
   imageUrls?: string[]
   videoUrl?: string
@@ -422,13 +479,16 @@ function resolveImageTaskProject(task: TaskStatusResponse, fallbackUrl = "") {
   const status: ProjectStatus =
     task.status === "failed" || (task.status === "completed" && imageUrls.length === 0)
       ? "失败"
-      : task.status === "completed"
+      : task.status === "partial_completed"
+        ? "部分完成"
+        : task.status === "completed"
         ? "已完成"
         : "生成中"
   const taskError =
     task.taskError || (task.status === "completed" && imageUrls.length === 0 ? "任务已完成，但接口没有返回图片地址。" : "")
 
   return {
+    imageUrls,
     previewUrl,
     status,
     taskError,
@@ -496,6 +556,9 @@ export function ChatArea({
   creditPackages,
   customerService,
   ledger,
+  membershipExpiresAt,
+  membershipFreeImageQualities,
+  membershipTier,
   modelPricing,
   onProjectAdd,
   onProjectDelete,
@@ -586,6 +649,7 @@ export function ChatArea({
             onProjectUpdate({
               ...project,
               status: resolved.status,
+              imageUrls: "imageUrls" in resolved ? resolved.imageUrls : project.imageUrls,
               previewUrl: resolved.previewUrl,
               taskError: resolved.taskError,
             })
@@ -628,9 +692,11 @@ export function ChatArea({
       model: result.model,
       palette: result.palette,
       prompt: result.prompt,
-      previewLabel: `${result.quality} · ${result.ratio}`,
+      imageUrls: result.imageUrls,
+      previewLabel: `${result.quality} · ${result.ratio} · ${result.imageCount} 张`,
       previewUrl: result.imageUrl,
       taskId: result.taskId,
+      taskError: result.taskError,
     })
   }
 
@@ -692,6 +758,9 @@ export function ChatArea({
               billingReady={billingReady}
               onImageGenerated={handleImageGenerated}
               creditBalance={creditBalance}
+              membershipExpiresAt={membershipExpiresAt}
+              membershipFreeImageQualities={membershipFreeImageQualities}
+              membershipTier={membershipTier}
               modelPricing={modelPricing}
               onAccountRefresh={onAccountRefresh}
               onProjectUpdated={onProjectUpdate}
@@ -722,6 +791,9 @@ export function ChatArea({
               creditPackages={creditPackages}
               customerService={customerService}
               ledger={ledger}
+              membershipExpiresAt={membershipExpiresAt}
+              membershipFreeImageQualities={membershipFreeImageQualities}
+              membershipTier={membershipTier}
               onRedeemSuccess={onAccountRefresh}
               redeemedCodes={redeemedCodes}
               userId={userId}
@@ -736,6 +808,9 @@ export function ChatArea({
 function ImageWorkspace({
   billingReady,
   creditBalance,
+  membershipExpiresAt,
+  membershipFreeImageQualities,
+  membershipTier,
   modelPricing,
   onAccountRefresh,
   onImageGenerated,
@@ -744,6 +819,9 @@ function ImageWorkspace({
 }: {
   billingReady: boolean
   creditBalance: number
+  membershipExpiresAt: string | null
+  membershipFreeImageQualities: string[]
+  membershipTier: MembershipTier | null
   modelPricing: ModelPricing[]
   onAccountRefresh: () => Promise<void>
   onImageGenerated: (result: ImageResult) => void
@@ -755,11 +833,14 @@ function ImageWorkspace({
   const imageSettings = imageModelSettings[model]
   const [quality, setQuality] = useState(imageSettings.qualities[1])
   const [ratio, setRatio] = useState(imageSettings.ratios[0])
+  const [imageCount, setImageCount] = useState(imageCountOptions[0])
+  const parsedImageCount = parseImageCount(imageCount)
   const ratioOptions = getImageRatiosForSelection(model, quality)
   const [isGenerating, setIsGenerating] = useState(false)
   const [error, setError] = useState("")
   const [result, setResult] = useState<ImageResult | null>(null)
   const [referenceImages, setReferenceImages] = useState<ReferenceImage[]>([])
+  const [isReferenceDragActive, setIsReferenceDragActive] = useState(false)
   const referenceInputRef = useRef<HTMLInputElement>(null)
   const promptRef = useRef<HTMLTextAreaElement>(null)
   const objectUrlsRef = useRef<Set<string>>(new Set())
@@ -768,7 +849,8 @@ function ImageWorkspace({
     quality,
     type: "image",
   })
-  const estimatedCredits = currentPricing ? calculatePricingCredits(currentPricing) : null
+  const membershipCoversQuality = isMembershipActive(membershipTier, membershipExpiresAt) && membershipFreeImageQualities.includes(quality)
+  const estimatedCredits = currentPricing ? (membershipCoversQuality ? 0 : calculatePricingCredits(currentPricing) * parsedImageCount) : null
 
   const handlePromptChange = (value: string) => {
     setPrompt(value)
@@ -844,6 +926,38 @@ function ImageWorkspace({
     if (referenceInputRef.current) referenceInputRef.current.value = ""
   }
 
+  const handleReferenceDragEnter = (event: DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedFiles(event)) return
+    event.preventDefault()
+    if (!isGenerating) {
+      setIsReferenceDragActive(true)
+    }
+  }
+
+  const handleReferenceDragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedFiles(event)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect =
+      isGenerating || referenceImages.length >= maxReferenceImages ? "none" : "copy"
+    if (!isGenerating) {
+      setIsReferenceDragActive(true)
+    }
+  }
+
+  const handleReferenceDragLeave = (event: DragEvent<HTMLDivElement>) => {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+    setIsReferenceDragActive(false)
+  }
+
+  const handleReferenceDrop = (event: DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedFiles(event)) return
+    event.preventDefault()
+    setIsReferenceDragActive(false)
+
+    if (isGenerating) return
+    handleReferenceImageChange(event.dataTransfer.files)
+  }
+
   const handleReferenceImageRemove = (id: string) => {
     setReferenceImages((items) => {
       const removed = items.find((item) => item.id === id)
@@ -889,6 +1003,7 @@ function ImageWorkspace({
       formData.append("prompt", trimmedPrompt)
       formData.append("model", model)
       formData.append("quality", quality)
+      formData.append("imageCount", String(parsedImageCount))
       const resolvedRatio =
         ratio === imageDefaultRatioOption ? resolveReferenceImageRatio(referenceImages[0], ratioOptions) : ratio
 
@@ -916,7 +1031,13 @@ function ImageWorkspace({
       await onAccountRefresh()
 
       const imageUrls = Array.isArray(data.imageUrls) ? data.imageUrls.filter((url: unknown) => typeof url === "string") : []
-      const isCompleted = data.status === "completed" && imageUrls.length > 0
+      const isCompleted = (data.status === "completed" || data.status === "partial_completed") && imageUrls.length > 0
+      const initialStatus: ProjectStatus =
+        data.status === "partial_completed" && imageUrls.length > 0
+          ? "部分完成"
+          : data.status === "completed" && imageUrls.length > 0
+            ? "已完成"
+            : "生成中"
       const generatedResult: ImageResult = {
         id: `image-${Date.now()}`,
         prompt: trimmedPrompt,
@@ -924,11 +1045,14 @@ function ImageWorkspace({
         quality,
         ratio: resolvedRatio,
         createdAt: "刚刚",
+        imageCount: parsedImageCount,
         imageUrl: imageUrls[0] ?? "",
+        imageUrls,
         palette: "from-indigo-500 via-sky-400 to-emerald-300",
-        status: isCompleted ? "已完成" : "生成中",
+        status: initialStatus,
         taskId: data.taskId,
         progress: isCompleted ? 100 : 0,
+        taskError: typeof data.taskError === "string" ? data.taskError : "",
       }
 
       setResult(generatedResult)
@@ -943,11 +1067,18 @@ function ImageWorkspace({
         taskId: data.taskId,
         onUpdate: (task) => {
           const resolved = resolveImageTaskProject(task, generatedResult.imageUrl)
+          const resolvedImageUrls =
+            resolved.status === "失败"
+              ? []
+              : resolved.imageUrls.length > 0
+                ? resolved.imageUrls
+                : generatedResult.imageUrls
           const nextResult: ImageResult = {
             ...generatedResult,
             status: resolved.status,
             progress: task.progress ?? generatedResult.progress,
             imageUrl: resolved.previewUrl,
+            imageUrls: resolvedImageUrls,
           }
 
           setResult(nextResult)
@@ -960,13 +1091,14 @@ function ImageWorkspace({
             model: nextResult.model,
             palette: nextResult.palette,
             prompt: nextResult.prompt,
-            previewLabel: `${nextResult.quality} · ${nextResult.ratio}`,
+            imageUrls: nextResult.imageUrls,
+            previewLabel: `${nextResult.quality} · ${nextResult.ratio} · ${nextResult.imageCount} 张`,
             previewUrl: nextResult.imageUrl,
             taskId: nextResult.taskId,
             taskError: resolved.taskError,
           })
 
-          if (resolved.status === "失败" || resolved.status === "已完成") {
+          if (resolved.status === "失败" || resolved.status === "已完成" || resolved.status === "部分完成") {
             onAccountRefresh().catch(() => undefined)
           }
         },
@@ -1010,7 +1142,18 @@ function ImageWorkspace({
             }`}
             placeholder="描述你想生成的画面，例如：未来感 AI 工作室，玻璃墙面，柔和灯光，产品级渲染..."
           />
-          <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+          <div
+            className={cn(
+              "mt-4 rounded-lg border border-dashed p-3 transition",
+              isReferenceDragActive
+                ? "border-indigo-400 bg-indigo-50 ring-2 ring-indigo-100"
+                : "border-slate-200 bg-slate-50"
+            )}
+            onDragEnter={handleReferenceDragEnter}
+            onDragLeave={handleReferenceDragLeave}
+            onDragOver={handleReferenceDragOver}
+            onDrop={handleReferenceDrop}
+          >
             <div className="flex flex-wrap items-center gap-3">
               <input
                 ref={referenceInputRef}
@@ -1050,12 +1193,12 @@ function ImageWorkspace({
               <div className="min-w-48 text-xs text-slate-500">
                 <div className="font-medium text-slate-700">参考图</div>
                 <div>
-                  已添加 {referenceImages.length}/{maxReferenceImages} 张 · JPG/PNG/WebP · 单张 10MB 内
+                  已添加 {referenceImages.length}/{maxReferenceImages} 张 · 可点击或拖拽上传 · JPG/PNG/WebP · 单张 10MB 内
                 </div>
               </div>
             </div>
           </div>
-          <div className="mt-4 grid gap-4 lg:grid-cols-3">
+          <div className="mt-4 grid gap-4 lg:grid-cols-4">
             <OptionGroup
               label="生图模型"
               onChange={(value) => {
@@ -1069,6 +1212,7 @@ function ImageWorkspace({
             />
             <OptionGroup label="图片清晰度" onChange={setQuality} options={imageSettings.qualities} selected={quality} />
             <OptionGroup label="图片比例" onChange={setRatio} options={ratioOptions} selected={ratio} />
+            <OptionGroup label="生成张数" onChange={setImageCount} options={imageCountOptions} selected={imageCount} />
           </div>
           {error && (
             <div className="mt-4 flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
@@ -1076,7 +1220,15 @@ function ImageWorkspace({
               {error}
             </div>
           )}
-          {billingReady ? <PricingNotice estimatedCredits={estimatedCredits} /> : <PricingLoadingNotice />}
+          {billingReady ? (
+            <PricingNotice
+              estimatedCredits={estimatedCredits}
+              imageCount={parsedImageCount}
+              membershipCoversQuality={membershipCoversQuality}
+            />
+          ) : (
+            <PricingLoadingNotice />
+          )}
           <div className="mt-5 flex flex-col gap-3 sm:flex-row">
             <Button
               className="bg-indigo-600 text-white hover:bg-indigo-700"
@@ -1093,7 +1245,12 @@ function ImageWorkspace({
           </div>
         </div>
 
-        <ImageResultPanel isGenerating={isGenerating} onRegenerate={handleGenerate} result={result} />
+        <ImageResultPanel
+          imageCount={parsedImageCount}
+          isGenerating={isGenerating}
+          onRegenerate={handleGenerate}
+          result={result}
+        />
       </section>
       <QuickEntryGrid onSectionChange={onSectionChange} />
     </>
@@ -1127,6 +1284,7 @@ function VideoWorkspace({
   const [error, setError] = useState("")
   const [result, setResult] = useState<VideoResult | null>(null)
   const [referenceImages, setReferenceImages] = useState<ReferenceImage[]>([])
+  const [isReferenceDragActive, setIsReferenceDragActive] = useState(false)
   const referenceInputRef = useRef<HTMLInputElement>(null)
   const promptRef = useRef<HTMLTextAreaElement>(null)
   const videoObjectUrlsRef = useRef<Set<string>>(new Set())
@@ -1216,6 +1374,38 @@ function VideoWorkspace({
 
     setError(nextError)
     if (referenceInputRef.current) referenceInputRef.current.value = ""
+  }
+
+  const handleReferenceDragEnter = (event: DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedFiles(event)) return
+    event.preventDefault()
+    if (!isGenerating) {
+      setIsReferenceDragActive(true)
+    }
+  }
+
+  const handleReferenceDragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedFiles(event)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect =
+      isGenerating || referenceImages.length >= maxReferenceImages ? "none" : "copy"
+    if (!isGenerating) {
+      setIsReferenceDragActive(true)
+    }
+  }
+
+  const handleReferenceDragLeave = (event: DragEvent<HTMLDivElement>) => {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+    setIsReferenceDragActive(false)
+  }
+
+  const handleReferenceDrop = (event: DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedFiles(event)) return
+    event.preventDefault()
+    setIsReferenceDragActive(false)
+
+    if (isGenerating) return
+    handleReferenceImageChange(event.dataTransfer.files)
   }
 
   const handleReferenceImageRemove = (id: string) => {
@@ -1379,7 +1569,18 @@ function VideoWorkspace({
             }`}
             placeholder="描述你想生成的视频，例如：科技产品在黑色展台缓慢旋转，镜头推进，背景有流动光线..."
           />
-          <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+          <div
+            className={cn(
+              "mt-4 rounded-lg border border-dashed p-3 transition",
+              isReferenceDragActive
+                ? "border-indigo-400 bg-indigo-50 ring-2 ring-indigo-100"
+                : "border-slate-200 bg-slate-50"
+            )}
+            onDragEnter={handleReferenceDragEnter}
+            onDragLeave={handleReferenceDragLeave}
+            onDragOver={handleReferenceDragOver}
+            onDrop={handleReferenceDrop}
+          >
             <div className="flex flex-wrap items-center gap-3">
               <input
                 ref={referenceInputRef}
@@ -1419,7 +1620,7 @@ function VideoWorkspace({
               <div className="min-w-48 text-xs text-slate-500">
                 <div className="font-medium text-slate-700">参考图</div>
                 <div>
-                  已添加 {referenceImages.length}/{maxReferenceImages} 张 · JPG/PNG/WebP · 单张 10MB 内
+                  已添加 {referenceImages.length}/{maxReferenceImages} 张 · 可点击或拖拽上传 · JPG/PNG/WebP · 单张 10MB 内
                 </div>
               </div>
             </div>
@@ -1571,7 +1772,13 @@ function ProjectPreviewThumb({ item }: { item: ProjectItem }) {
   return (
     <div className="h-14 w-14 shrink-0 overflow-hidden rounded-md bg-slate-100">
       {item.previewUrl && item.type === "生图" ? (
-        <img alt={item.title} className="h-full w-full object-cover" src={item.previewUrl} />
+        <ImageWithFallback
+          alt={item.title}
+          className="h-full w-full object-cover"
+          fallbackClassName={`h-full w-full bg-gradient-to-br ${item.palette ?? "from-slate-100 to-slate-300"}`}
+          fallbackIconClassName="h-5 w-5"
+          src={item.previewUrl}
+        />
       ) : (
         <div
           className={`flex h-full w-full items-center justify-center bg-gradient-to-br ${
@@ -1589,12 +1796,45 @@ function ProjectPreviewThumb({ item }: { item: ProjectItem }) {
   )
 }
 
+function ImageWithFallback({
+  alt,
+  className,
+  fallbackClassName,
+  fallbackIconClassName = "h-10 w-10",
+  showMessage = false,
+  src,
+}: {
+  alt: string
+  className: string
+  fallbackClassName: string
+  fallbackIconClassName?: string
+  showMessage?: boolean
+  src: string
+}) {
+  const [hasError, setHasError] = useState(false)
+
+  if (hasError) {
+    return (
+      <div className={cn("flex items-center justify-center", fallbackClassName)}>
+        <div className="grid justify-items-center gap-2 px-4 text-center text-white/85">
+          <ImageIcon className={cn("drop-shadow-sm", fallbackIconClassName)} />
+          {showMessage && <div className="text-xs font-medium">图片地址不可访问</div>}
+        </div>
+      </div>
+    )
+  }
+
+  return <img alt={alt} className={className} onError={() => setHasError(true)} src={src} />
+}
+
 function StatusBadge({ status }: { status: ProjectStatus }) {
   return (
     <Badge
       className={
         status === "已完成"
           ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+          : status === "部分完成"
+            ? "border-amber-200 bg-amber-50 text-amber-700"
           : status === "生成中"
             ? "border-indigo-200 bg-indigo-50 text-indigo-700"
             : "border-rose-200 bg-rose-50 text-rose-700"
@@ -1627,6 +1867,7 @@ function HistoryDetailPanel({
   }
 
   const canUseResult = Boolean(item.previewUrl)
+  const imageUrls = item.type === "生图" ? item.imageUrls?.filter(Boolean) ?? (item.previewUrl ? [item.previewUrl] : []) : []
   const prompt = item.prompt ?? ""
   const handleDownload = () => {
     if (!item.previewUrl) return
@@ -1651,8 +1892,26 @@ function HistoryDetailPanel({
       </div>
 
       <div className="mt-4 overflow-hidden rounded-lg border border-slate-200 bg-slate-950">
-        {item.previewUrl && item.type === "生图" ? (
-          <img alt={item.title} className="aspect-square w-full object-cover" src={item.previewUrl} />
+        {imageUrls.length > 0 && item.type === "生图" ? (
+          <div className={imageUrls.length === 1 ? "grid gap-2" : "grid grid-cols-2 gap-2 bg-white p-2"}>
+            {imageUrls.map((url, index) => (
+              <button
+                aria-label={`查看结果图 ${index + 1}`}
+                className="overflow-hidden rounded-md bg-slate-100 text-left"
+                key={`${url}-${index}`}
+                onClick={() => openAsset(url)}
+                type="button"
+              >
+                <ImageWithFallback
+                  alt={`${item.title} ${index + 1}`}
+                  className="aspect-square w-full object-cover"
+                  fallbackClassName={`aspect-square bg-gradient-to-br ${item.palette ?? "from-slate-800 to-slate-500"}`}
+                  src={url}
+                  showMessage
+                />
+              </button>
+            ))}
+          </div>
         ) : item.previewUrl && item.type === "视频" ? (
           <video className="aspect-video w-full bg-black" controls src={item.previewUrl} />
         ) : (
@@ -1750,6 +2009,9 @@ function CreditsWorkspace({
   creditPackages,
   customerService,
   ledger,
+  membershipExpiresAt,
+  membershipFreeImageQualities,
+  membershipTier,
   onRedeemSuccess,
   redeemedCodes,
   userId,
@@ -1763,6 +2025,9 @@ function CreditsWorkspace({
     createdAt: string
     id: string
   }>
+  membershipExpiresAt: string | null
+  membershipFreeImageQualities: string[]
+  membershipTier: MembershipTier | null
   onRedeemSuccess: () => Promise<void>
   redeemedCodes: string[]
   userId: string
@@ -1791,7 +2056,9 @@ function CreditsWorkspace({
       setRedeemCode("")
       setFeedback({
         type: "success",
-        message: `兑换成功，已增加 ${result.credits.toLocaleString()} 点。`,
+        message: result.membership_tier
+          ? `${getMembershipLabel(result.membership_tier)} 兑换成功，到期时间 ${formatMembershipExpiresAt(result.membership_expires_at ?? null)}。`
+          : `兑换成功，已增加 ${result.credits.toLocaleString()} 点。`,
       })
     } catch (error) {
       setFeedback({
@@ -1820,13 +2087,31 @@ function CreditsWorkspace({
         </div>
 
         <div className="mt-5 rounded-lg border border-emerald-200 bg-emerald-50 p-4">
-          <div className="flex items-center gap-2 text-sm font-medium text-emerald-950">
-            <WalletCards className="h-4 w-4" />
-            当前余额
-          </div>
-          <div className="mt-2 text-3xl font-semibold tracking-tight text-emerald-700">
-            {creditBalance.toLocaleString()}
-            <span className="ml-2 text-sm font-normal text-emerald-800">点</span>
+          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+            <div>
+              <div className="flex items-center gap-2 text-sm font-medium text-emerald-950">
+                <WalletCards className="h-4 w-4" />
+                当前余额
+              </div>
+              <div className="mt-2 text-3xl font-semibold tracking-tight text-emerald-700">
+                {creditBalance.toLocaleString()}
+                <span className="ml-2 text-sm font-normal text-emerald-800">点</span>
+              </div>
+            </div>
+            <div className="border-t border-emerald-200 pt-3 sm:border-l sm:border-t-0 sm:pl-4 sm:pt-0">
+              <div className="text-sm font-medium text-emerald-950">{getMembershipLabel(membershipTier)} 到期时间</div>
+              <div className="mt-2 text-lg font-semibold text-emerald-700">
+                {membershipExpiresAt ? formatMembershipExpiresAt(membershipExpiresAt) : "未开通"}
+              </div>
+              {membershipExpiresAt && !isMembershipActive(membershipTier, membershipExpiresAt) && (
+                <div className="mt-1 text-xs text-rose-600">会员已过期</div>
+              )}
+              {isMembershipActive(membershipTier, membershipExpiresAt) && membershipFreeImageQualities.length > 0 && (
+                <div className="mt-1 text-xs text-emerald-800">
+                  生图免费：{membershipFreeImageQualities.join(" / ")}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -1882,9 +2167,17 @@ function CreditsWorkspace({
                 >
                   <div>
                     <div className="font-medium text-slate-700">{item.name}</div>
-                    <div className="text-xs text-slate-500">{item.price_cny.toFixed(2)} 元</div>
+                    <div className="text-xs text-slate-500">
+                      {item.package_type === "membership"
+                        ? `${item.price_cny.toFixed(2)} 元 / ${item.membership_duration_days ?? 365} 天`
+                        : `${item.price_cny.toFixed(2)} 元`}
+                    </div>
                   </div>
-                  <div className="font-semibold text-emerald-700">{item.credits.toLocaleString()} 点</div>
+                  <div className="text-right font-semibold text-emerald-700">
+                    {item.package_type === "membership"
+                      ? `${getMembershipLabel(item.membership_tier)} · ${item.membership_free_image_qualities.join("/") || "生图"} 免费`
+                      : `${item.credits.toLocaleString()} 点`}
+                  </div>
                 </div>
               ))
             )}
@@ -1908,7 +2201,10 @@ function CreditsWorkspace({
                     <div className="truncate font-medium text-slate-700">{item.code}</div>
                     <div className="text-xs text-slate-500">{formatLedgerDateTime(item.createdAt)}</div>
                   </div>
-                  <div className="font-medium text-emerald-700">+{item.amount.toLocaleString()} 点</div>
+                  <div className={item.amount >= 0 ? "font-medium text-emerald-700" : "font-medium text-rose-700"}>
+                    {item.amount >= 0 ? "+" : ""}
+                    {item.amount.toLocaleString()} 点
+                  </div>
                 </div>
               ))
             )}
@@ -1997,14 +2293,23 @@ function OptionGroup({
 }
 
 function ImageResultPanel({
+  imageCount,
   isGenerating,
   onRegenerate,
   result,
 }: {
+  imageCount: number
   isGenerating: boolean
   onRegenerate: () => void
   result: ImageResult | null
 }) {
+  const imageUrls = result?.imageUrls?.length ? result.imageUrls : result?.imageUrl ? [result.imageUrl] : []
+  const badgeClassName =
+    result?.status === "部分完成"
+      ? "border-amber-200 bg-amber-50 text-amber-700"
+      : result?.status === "失败"
+        ? "border-rose-200 bg-rose-50 text-rose-700"
+        : "border-emerald-200 bg-emerald-50 text-emerald-700"
   const handleDownload = () => {
     if (!result?.imageUrl) return
 
@@ -2017,8 +2322,8 @@ function ImageResultPanel({
       <div className="rounded-lg border border-slate-200 bg-white p-5">
         <h2 className="text-base font-semibold">结果预览</h2>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          {[1, 2, 3, 4].map((item) => (
-            <div className="aspect-square animate-pulse rounded-lg bg-slate-100" key={item} />
+          {Array.from({ length: imageCount }, (_, index) => (
+            <div className="aspect-square animate-pulse rounded-lg bg-slate-100" key={index} />
           ))}
         </div>
         <div className="mt-4 flex items-center gap-2 text-sm text-slate-500">
@@ -2038,14 +2343,25 @@ function ImageResultPanel({
     <div className="rounded-lg border border-slate-200 bg-white p-5">
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-base font-semibold">结果预览</h2>
-        <Badge className="border-emerald-200 bg-emerald-50 text-emerald-700" variant="outline">
+        <Badge className={badgeClassName} variant="outline">
           <CheckCircle2 className="h-3 w-3" />
           {result.status}
         </Badge>
       </div>
       <div className="mt-4 overflow-hidden rounded-lg border border-slate-200 bg-white">
-        {result.imageUrl ? (
-          <img alt={result.prompt} className="aspect-square w-full object-cover" src={result.imageUrl} />
+        {imageUrls.length > 0 ? (
+          <div className={imageUrls.length === 1 ? "grid gap-2" : "grid grid-cols-2 gap-2 p-2"}>
+            {imageUrls.map((url, index) => (
+              <ImageWithFallback
+                alt={`${result.prompt} ${index + 1}`}
+                className="aspect-square w-full rounded-md object-cover"
+                fallbackClassName={`aspect-square rounded-md bg-gradient-to-br ${result.palette}`}
+                key={`${url}-${index}`}
+                src={url}
+                showMessage
+              />
+            ))}
+          </div>
         ) : (
           <div className={`aspect-square bg-gradient-to-br ${result.palette}`} />
         )}
@@ -2053,7 +2369,7 @@ function ImageResultPanel({
           <div className="min-w-0">
             <div className="truncate text-sm font-medium">{result.prompt}</div>
             <div className="truncate text-xs text-slate-500">
-              {result.quality} · {result.ratio}
+              {result.quality} · {result.ratio} · {result.imageCount} 张
             </div>
           </div>
         </div>
@@ -2071,9 +2387,10 @@ function ImageResultPanel({
       <div className="mt-4 rounded-lg bg-slate-50 p-3 text-xs text-slate-500">
         <div className="font-medium text-slate-700">生成参数</div>
         <div className="mt-1">
-          {result.model} · {result.quality} · {result.ratio}
+          {result.model} · {result.quality} · {result.ratio} · {result.imageCount} 张
         </div>
         <div className="mt-1">任务 ID：{result.taskId}</div>
+        {result.taskError && <div className="mt-1 text-amber-700">生成说明：{result.taskError}</div>}
       </div>
     </div>
   )

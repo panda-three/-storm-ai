@@ -1,9 +1,14 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
-import type { LocalAccountData } from "@/lib/local-store"
+import type { LocalAccountData, MembershipTier } from "@/lib/local-store"
+
+export type PackageType = "credits" | "membership"
 
 export interface SupabaseAccountRow {
   credit_balance: number
   ledger: LocalAccountData["ledger"]
+  membership_expires_at: string | null
+  membership_free_image_qualities: string[] | null
+  membership_tier: MembershipTier | null
   projects: LocalAccountData["projects"]
   redeemed_codes: string[]
   role: "user" | "admin"
@@ -21,7 +26,11 @@ export interface CreditPackage {
   credits: number
   enabled: boolean
   id: string
+  membership_duration_days: number | null
+  membership_free_image_qualities: string[]
+  membership_tier: MembershipTier | null
   name: string
+  package_type: PackageType
   price_cny: number
   sort_order: number
 }
@@ -30,7 +39,11 @@ export interface RedeemCode {
   code: string
   created_at: string
   credits: number
+  membership_duration_days: number | null
+  membership_free_image_qualities: string[]
+  membership_tier: MembershipTier | null
   package_id: string | null
+  package_type: PackageType
   price_cny: number
   status: "unused" | "used" | "disabled"
   used_at: string | null
@@ -52,6 +65,9 @@ export interface ModelPricing {
 export interface AdminAccountSummary {
   credit_balance: number
   ledger: LocalAccountData["ledger"]
+  membership_expires_at: string | null
+  membership_free_image_qualities: string[] | null
+  membership_tier: MembershipTier | null
   role: "user" | "admin"
   updated_at: string
   user_id: string
@@ -62,6 +78,9 @@ export interface RedeemResult {
   code: string
   credit_balance: number
   credits: number
+  membership_expires_at?: string
+  membership_free_image_qualities?: string[]
+  membership_tier?: MembershipTier
 }
 
 export interface CreditTransactionResult {
@@ -102,7 +121,7 @@ export async function loadSupabaseAccount(userId: string): Promise<SupabaseAccou
 
   const { data, error } = await supabase
     .from("user_accounts")
-    .select("user_id, username, credit_balance, projects, ledger, redeemed_codes, role")
+    .select("user_id, username, credit_balance, projects, ledger, redeemed_codes, role, membership_tier, membership_expires_at, membership_free_image_qualities")
     .eq("user_id", userId)
     .maybeSingle()
 
@@ -117,7 +136,7 @@ export async function loadAdminAccounts(): Promise<AdminAccountSummary[]> {
 
   const { data, error } = await supabase
     .from("user_accounts")
-    .select("user_id, username, credit_balance, ledger, role, updated_at")
+    .select("user_id, username, credit_balance, ledger, role, updated_at, membership_tier, membership_expires_at, membership_free_image_qualities")
     .order("updated_at", { ascending: false })
     .limit(100)
 
@@ -174,7 +193,7 @@ export async function loadCreditPackages({ includeDisabled = false } = {}): Prom
 
   let query = supabase
     .from("credit_packages")
-    .select("id, name, price_cny, credits, enabled, sort_order")
+    .select("id, name, price_cny, credits, enabled, sort_order, package_type, membership_tier, membership_duration_days, membership_free_image_qualities")
     .order("sort_order", { ascending: true })
     .order("price_cny", { ascending: true })
 
@@ -196,8 +215,12 @@ export async function saveCreditPackage(pkg: Omit<CreditPackage, "id"> & { id?: 
   const { error } = await supabase.from("credit_packages").upsert({
     credits: pkg.credits,
     enabled: pkg.enabled,
-    id: pkg.id,
+    id: pkg.id || undefined,
+    membership_duration_days: pkg.membership_duration_days,
+    membership_free_image_qualities: pkg.membership_free_image_qualities,
+    membership_tier: pkg.membership_tier,
     name: pkg.name,
+    package_type: pkg.package_type,
     price_cny: pkg.price_cny,
     sort_order: pkg.sort_order,
     updated_at: new Date().toISOString(),
@@ -212,7 +235,7 @@ export async function loadRedeemCodes(): Promise<RedeemCode[]> {
 
   const { data, error } = await supabase
     .from("redeem_codes")
-    .select("code, package_id, credits, price_cny, status, used_by, used_at, created_at")
+    .select("code, package_id, credits, price_cny, status, used_by, used_at, created_at, package_type, membership_tier, membership_duration_days, membership_free_image_qualities")
     .order("created_at", { ascending: false })
     .limit(100)
 
@@ -232,7 +255,11 @@ export async function createRedeemCode(pkg: CreditPackage, code: string) {
     code: normalizedCode,
     credits: pkg.credits,
     created_by: userData.user?.id ?? null,
+    membership_duration_days: pkg.membership_duration_days,
+    membership_free_image_qualities: pkg.membership_free_image_qualities,
+    membership_tier: pkg.membership_tier,
     package_id: pkg.id,
+    package_type: pkg.package_type,
     price_cny: pkg.price_cny,
     status: "unused",
   })

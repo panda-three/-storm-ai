@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import type { WorkspaceSection } from "@/app/page"
-import { imageModelOptions, imageModelSettings, videoModelOptions, videoModelSettings } from "@/lib/model-options"
+import { adminVideoModelOptions, imageModelOptions, imageModelSettings, videoModelSettings } from "@/lib/model-options"
 import type { AdminAccountSummary, CreditPackage, CustomerServiceSettings, ModelPricing, RedeemCode } from "@/lib/supabase"
 import { calculatePricingCredits, createRedeemCode, saveCreditPackage, saveCustomerServiceSettings, saveModelPricing } from "@/lib/supabase"
 import { AlertCircle, ArrowLeft, CheckCircle2, Coins, Loader2, Menu, QrCode, Save, ShieldCheck, SlidersHorizontal, Ticket } from "lucide-react"
@@ -37,7 +37,11 @@ const emptyPackageForm = {
   credits: 990,
   enabled: true,
   id: "",
+  membership_duration_days: null,
+  membership_free_image_qualities: [] as string[],
+  membership_tier: null,
   name: "",
+  package_type: "credits" as const,
   price_cny: 9.9,
   sort_order: 10,
 }
@@ -63,9 +67,22 @@ function normalizeCurrency(value: number) {
   return Math.round(value * 100) / 100
 }
 
+function getPackageTypeLabel(pkg: Pick<CreditPackage, "package_type" | "credits" | "membership_duration_days" | "membership_free_image_qualities" | "membership_tier">) {
+  if (pkg.package_type === "membership") {
+    const tier = pkg.membership_tier === "svip" ? "SVIP" : "VIP"
+    return `${tier} · ${pkg.membership_duration_days ?? 365} 天 · ${pkg.membership_free_image_qualities.join("/") || "生图"} 免费`
+  }
+
+  return `${pkg.credits.toLocaleString()} 点`
+}
+
+function toggleQuality(qualities: string[], quality: string) {
+  return qualities.includes(quality) ? qualities.filter((item) => item !== quality) : [...qualities, quality]
+}
+
 function getDefaultPricingForm(type: "image" | "video"): Omit<ModelPricing, "id"> & { id?: string } {
   if (type === "video") {
-    const model = videoModelOptions[0]
+    const model = adminVideoModelOptions[0]
     const settings = videoModelSettings[model]
 
     return {
@@ -178,7 +195,7 @@ export function AdminWorkspace({
   const totalUserCredits = adminAccounts.reduce((sum, item) => sum + item.credit_balance, 0)
   const usedRedeemCount = redeemCodes.filter((item) => item.status === "used").length
   const enabledPricingCount = modelPricing.filter((item) => item.enabled).length
-  const pricingModelOptions = pricingForm.type === "image" ? imageModelOptions : videoModelOptions
+  const pricingModelOptions = pricingForm.type === "image" ? imageModelOptions : adminVideoModelOptions
   const pricingImageSettings = pricingForm.type === "image" ? imageModelSettings[pricingForm.model] : null
   const pricingVideoSettings = pricingForm.type === "video" ? videoModelSettings[pricingForm.model] : null
   const pricingQualityOptions = pricingImageSettings?.qualities ?? pricingVideoSettings?.qualities ?? []
@@ -205,8 +222,23 @@ export function AdminWorkspace({
       return
     }
 
-    if (packageForm.price_cny < 0 || packageForm.credits <= 0) {
-      setFeedback({ type: "error", message: "套餐金额和点数必须有效。" })
+    if (packageForm.package_type === "credits" && packageForm.credits <= 0) {
+      setFeedback({ type: "error", message: "点数套餐的到账点数必须大于 0。" })
+      return
+    }
+
+    if (packageForm.package_type === "membership" && (!packageForm.membership_tier || !packageForm.membership_duration_days)) {
+      setFeedback({ type: "error", message: "请选择会员等级和有效期。" })
+      return
+    }
+
+    if (packageForm.package_type === "membership" && packageForm.membership_free_image_qualities.length === 0) {
+      setFeedback({ type: "error", message: "请选择会员免费生图清晰度。" })
+      return
+    }
+
+    if (packageForm.price_cny < 0) {
+      setFeedback({ type: "error", message: "套餐金额必须有效。" })
       return
     }
 
@@ -216,6 +248,11 @@ export function AdminWorkspace({
     try {
       await saveCreditPackage({
         ...packageForm,
+        credits: packageForm.package_type === "membership" ? 0 : packageForm.credits,
+        membership_duration_days: packageForm.package_type === "membership" ? packageForm.membership_duration_days : null,
+        membership_free_image_qualities:
+          packageForm.package_type === "membership" ? packageForm.membership_free_image_qualities : [],
+        membership_tier: packageForm.package_type === "membership" ? packageForm.membership_tier : null,
         name: packageForm.name.trim(),
       })
       setPackageForm(emptyPackageForm)
@@ -449,6 +486,32 @@ export function AdminWorkspace({
                   <h2 className="text-base font-semibold">点数套餐</h2>
                 </div>
                 <div className="mt-4 grid gap-3">
+                  <label className="grid gap-1">
+                    <span className="text-sm font-medium text-slate-700">套餐类型</span>
+                    <select
+                      className="h-10 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition focus:border-indigo-300 focus:bg-white focus:ring-2 focus:ring-indigo-100"
+                      onChange={(event) => {
+                        const packageType = event.target.value as CreditPackage["package_type"]
+                        setPackageForm((current) => ({
+                          ...current,
+                          credits: packageType === "membership" ? 0 : Math.max(current.credits, 990),
+                          membership_duration_days: packageType === "membership" ? current.membership_duration_days ?? 365 : null,
+                          membership_free_image_qualities:
+                            packageType === "membership"
+                              ? current.membership_free_image_qualities.length > 0
+                                ? current.membership_free_image_qualities
+                                : ["1K", "2K"]
+                              : [],
+                          membership_tier: packageType === "membership" ? current.membership_tier ?? "vip" : null,
+                          package_type: packageType,
+                        }))
+                      }}
+                      value={packageForm.package_type}
+                    >
+                      <option value="credits">点数包</option>
+                      <option value="membership">会员包</option>
+                    </select>
+                  </label>
                   <AdminInput
                     label="套餐名称"
                     onChange={(value) => setPackageForm((current) => ({ ...current, name: value }))}
@@ -460,11 +523,65 @@ export function AdminWorkspace({
                     onChange={(value) => setPackageForm((current) => ({ ...current, price_cny: value }))}
                     value={packageForm.price_cny}
                   />
-                  <AdminNumberInput
-                    label="到账点数"
-                    onChange={(value) => setPackageForm((current) => ({ ...current, credits: Math.round(value) }))}
-                    value={packageForm.credits}
-                  />
+                  {packageForm.package_type === "credits" ? (
+                    <AdminNumberInput
+                      label="到账点数"
+                      onChange={(value) => setPackageForm((current) => ({ ...current, credits: Math.round(value) }))}
+                      value={packageForm.credits}
+                    />
+                  ) : (
+                    <>
+                      <label className="grid gap-1">
+                        <span className="text-sm font-medium text-slate-700">会员等级</span>
+                        <select
+                          className="h-10 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition focus:border-indigo-300 focus:bg-white focus:ring-2 focus:ring-indigo-100"
+                          onChange={(event) =>
+                            setPackageForm((current) => ({
+                              ...current,
+                              membership_tier: event.target.value as CreditPackage["membership_tier"],
+                              membership_free_image_qualities:
+                                event.target.value === "svip" ? ["1K", "2K", "4K"] : ["1K", "2K"],
+                            }))
+                          }
+                          value={packageForm.membership_tier ?? "vip"}
+                        >
+                          <option value="vip">VIP</option>
+                          <option value="svip">SVIP</option>
+                        </select>
+                      </label>
+                      <AdminNumberInput
+                        label="有效期（天）"
+                        onChange={(value) =>
+                          setPackageForm((current) => ({ ...current, membership_duration_days: Math.round(value) }))
+                        }
+                        value={packageForm.membership_duration_days ?? 365}
+                      />
+                      <div className="grid gap-2">
+                        <span className="text-sm font-medium text-slate-700">免费生图清晰度</span>
+                        <div className="flex flex-wrap gap-2">
+                          {["1K", "2K", "4K"].map((quality) => (
+                            <button
+                              className={
+                                packageForm.membership_free_image_qualities.includes(quality)
+                                  ? "rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700"
+                                  : "rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-600"
+                              }
+                              key={quality}
+                              onClick={() =>
+                                setPackageForm((current) => ({
+                                  ...current,
+                                  membership_free_image_qualities: toggleQuality(current.membership_free_image_qualities, quality),
+                                }))
+                              }
+                              type="button"
+                            >
+                              {quality}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  )}
                   <AdminNumberInput
                     label="排序"
                     onChange={(value) => setPackageForm((current) => ({ ...current, sort_order: Math.round(value) }))}
@@ -489,7 +606,7 @@ export function AdminWorkspace({
                           <div>
                             <div className="font-medium text-slate-800">{item.name}</div>
                             <div className="mt-1 text-sm text-slate-500">
-                              {item.price_cny.toFixed(2)} 元 = {item.credits.toLocaleString()} 点
+                              {item.price_cny.toFixed(2)} 元 = {getPackageTypeLabel(item)}
                             </div>
                             <div className="mt-1 text-xs text-slate-400">排序：{item.sort_order}</div>
                           </div>
@@ -650,7 +767,7 @@ export function AdminWorkspace({
                       <option value="">请选择套餐</option>
                       {creditPackages.map((item) => (
                         <option key={item.id} value={item.id}>
-                          {item.name} / {item.price_cny.toFixed(2)} 元 / {item.credits} 点
+                          {item.name} / {item.price_cny.toFixed(2)} 元 / {getPackageTypeLabel(item)}
                         </option>
                       ))}
                     </select>
@@ -692,7 +809,7 @@ export function AdminWorkspace({
                           <div>
                             <div className="font-medium text-slate-800">{item.code}</div>
                             <div className="mt-1 text-sm text-slate-500">
-                              {item.price_cny.toFixed(2)} 元 = {item.credits.toLocaleString()} 点
+                              {item.price_cny.toFixed(2)} 元 = {getPackageTypeLabel(item)}
                             </div>
                             <div className="mt-1 text-xs text-slate-400">
                               {item.used_by ? `使用人：${accountNameById.get(item.used_by) ?? item.used_by}` : "未使用"}

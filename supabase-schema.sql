@@ -2,6 +2,9 @@ create table if not exists public.user_accounts (
   user_id uuid primary key references auth.users(id) on delete cascade,
   username text,
   credit_balance integer not null default 0,
+  membership_tier text check (membership_tier in ('vip', 'svip')),
+  membership_expires_at timestamptz,
+  membership_free_image_qualities jsonb not null default '[]'::jsonb,
   projects jsonb not null default '[]'::jsonb,
   ledger jsonb not null default '[]'::jsonb,
   redeemed_codes jsonb not null default '[]'::jsonb,
@@ -12,9 +15,16 @@ create table if not exists public.user_accounts (
 
 alter table public.user_accounts add column if not exists role text not null default 'user';
 alter table public.user_accounts add column if not exists username text;
+alter table public.user_accounts add column if not exists membership_tier text;
+alter table public.user_accounts add column if not exists membership_expires_at timestamptz;
+alter table public.user_accounts add column if not exists membership_free_image_qualities jsonb not null default '[]'::jsonb;
 alter table public.user_accounts alter column credit_balance set default 0;
 alter table public.user_accounts drop constraint if exists user_accounts_role_check;
 alter table public.user_accounts add constraint user_accounts_role_check check (role in ('user', 'admin')) not valid;
+alter table public.user_accounts drop constraint if exists user_accounts_membership_tier_check;
+alter table public.user_accounts add constraint user_accounts_membership_tier_check check (membership_tier is null or membership_tier in ('vip', 'svip')) not valid;
+alter table public.user_accounts drop constraint if exists user_accounts_membership_free_image_qualities_check;
+alter table public.user_accounts add constraint user_accounts_membership_free_image_qualities_check check (jsonb_typeof(membership_free_image_qualities) = 'array') not valid;
 alter table public.user_accounts drop constraint if exists user_accounts_username_format_check;
 alter table public.user_accounts add constraint user_accounts_username_format_check check (username is null or username ~ '^[A-Za-z0-9_]{3,24}$') not valid;
 
@@ -81,18 +91,58 @@ for each row execute function public.create_account_for_new_user();
 create table if not exists public.credit_packages (
   id uuid primary key default gen_random_uuid(),
   name text not null,
+  package_type text not null default 'credits' check (package_type in ('credits', 'membership')),
   price_cny numeric(10, 2) not null check (price_cny >= 0),
-  credits integer not null check (credits > 0),
+  credits integer not null check (credits >= 0),
+  membership_tier text check (membership_tier in ('vip', 'svip')),
+  membership_duration_days integer check (membership_duration_days is null or membership_duration_days > 0),
+  membership_free_image_qualities jsonb not null default '[]'::jsonb,
   enabled boolean not null default true,
   sort_order integer not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
+alter table public.credit_packages add column if not exists package_type text not null default 'credits';
+alter table public.credit_packages add column if not exists membership_tier text;
+alter table public.credit_packages add column if not exists membership_duration_days integer;
+alter table public.credit_packages add column if not exists membership_free_image_qualities jsonb not null default '[]'::jsonb;
+alter table public.credit_packages drop constraint if exists credit_packages_credits_check;
+alter table public.credit_packages add constraint credit_packages_credits_check check (credits >= 0) not valid;
+alter table public.credit_packages drop constraint if exists credit_packages_package_type_check;
+alter table public.credit_packages add constraint credit_packages_package_type_check check (package_type in ('credits', 'membership')) not valid;
+alter table public.credit_packages drop constraint if exists credit_packages_membership_tier_check;
+alter table public.credit_packages add constraint credit_packages_membership_tier_check check (membership_tier is null or membership_tier in ('vip', 'svip')) not valid;
+alter table public.credit_packages drop constraint if exists credit_packages_membership_duration_days_check;
+alter table public.credit_packages add constraint credit_packages_membership_duration_days_check check (membership_duration_days is null or membership_duration_days > 0) not valid;
+alter table public.credit_packages drop constraint if exists credit_packages_membership_free_image_qualities_check;
+alter table public.credit_packages add constraint credit_packages_membership_free_image_qualities_check check (jsonb_typeof(membership_free_image_qualities) = 'array') not valid;
+alter table public.credit_packages drop constraint if exists credit_packages_package_shape_check;
+alter table public.credit_packages add constraint credit_packages_package_shape_check check (
+  (
+    package_type = 'credits'
+    and credits > 0
+    and membership_tier is null
+    and membership_duration_days is null
+    and membership_free_image_qualities = '[]'::jsonb
+  )
+  or (
+    package_type = 'membership'
+    and credits = 0
+    and membership_tier in ('vip', 'svip')
+    and membership_duration_days > 0
+    and jsonb_array_length(membership_free_image_qualities) > 0
+  )
+) not valid;
+
 create table if not exists public.redeem_codes (
   code text primary key,
   package_id uuid references public.credit_packages(id) on delete set null,
-  credits integer not null check (credits > 0),
+  package_type text not null default 'credits' check (package_type in ('credits', 'membership')),
+  credits integer not null check (credits >= 0),
+  membership_tier text check (membership_tier in ('vip', 'svip')),
+  membership_duration_days integer check (membership_duration_days is null or membership_duration_days > 0),
+  membership_free_image_qualities jsonb not null default '[]'::jsonb,
   price_cny numeric(10, 2) not null default 0 check (price_cny >= 0),
   status text not null default 'unused' check (status in ('unused', 'used', 'disabled')),
   used_by uuid references auth.users(id) on delete set null,
@@ -101,6 +151,38 @@ create table if not exists public.redeem_codes (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.redeem_codes add column if not exists package_type text not null default 'credits';
+alter table public.redeem_codes add column if not exists membership_tier text;
+alter table public.redeem_codes add column if not exists membership_duration_days integer;
+alter table public.redeem_codes add column if not exists membership_free_image_qualities jsonb not null default '[]'::jsonb;
+alter table public.redeem_codes drop constraint if exists redeem_codes_credits_check;
+alter table public.redeem_codes add constraint redeem_codes_credits_check check (credits >= 0) not valid;
+alter table public.redeem_codes drop constraint if exists redeem_codes_package_type_check;
+alter table public.redeem_codes add constraint redeem_codes_package_type_check check (package_type in ('credits', 'membership')) not valid;
+alter table public.redeem_codes drop constraint if exists redeem_codes_membership_tier_check;
+alter table public.redeem_codes add constraint redeem_codes_membership_tier_check check (membership_tier is null or membership_tier in ('vip', 'svip')) not valid;
+alter table public.redeem_codes drop constraint if exists redeem_codes_membership_duration_days_check;
+alter table public.redeem_codes add constraint redeem_codes_membership_duration_days_check check (membership_duration_days is null or membership_duration_days > 0) not valid;
+alter table public.redeem_codes drop constraint if exists redeem_codes_membership_free_image_qualities_check;
+alter table public.redeem_codes add constraint redeem_codes_membership_free_image_qualities_check check (jsonb_typeof(membership_free_image_qualities) = 'array') not valid;
+alter table public.redeem_codes drop constraint if exists redeem_codes_package_shape_check;
+alter table public.redeem_codes add constraint redeem_codes_package_shape_check check (
+  (
+    package_type = 'credits'
+    and credits > 0
+    and membership_tier is null
+    and membership_duration_days is null
+    and membership_free_image_qualities = '[]'::jsonb
+  )
+  or (
+    package_type = 'membership'
+    and credits = 0
+    and membership_tier in ('vip', 'svip')
+    and membership_duration_days > 0
+    and jsonb_array_length(membership_free_image_qualities) > 0
+  )
+) not valid;
 
 create index if not exists redeem_codes_status_idx on public.redeem_codes (status);
 create index if not exists redeem_codes_used_by_idx on public.redeem_codes (used_by);
@@ -128,8 +210,9 @@ create table if not exists public.generation_jobs (
   model text not null,
   prompt text not null,
   amount integer not null check (amount >= 0),
+  expected_result_count integer not null default 1 check (expected_result_count between 1 and 4),
   reference text not null unique,
-  status text not null default 'submitted' check (status in ('submitted', 'processing', 'completed', 'failed')),
+  status text not null default 'submitted' check (status in ('submitted', 'processing', 'completed', 'failed', 'partial_completed')),
   upstream_task_id text,
   result_urls jsonb not null default '[]'::jsonb,
   task_error text,
@@ -149,6 +232,11 @@ alter table public.generation_jobs add column if not exists check_attempts integ
 alter table public.generation_jobs add column if not exists last_sync_error text;
 alter table public.generation_jobs add column if not exists sync_locked_until timestamptz;
 alter table public.generation_jobs add column if not exists completed_at timestamptz;
+alter table public.generation_jobs add column if not exists expected_result_count integer not null default 1;
+alter table public.generation_jobs drop constraint if exists generation_jobs_status_check;
+alter table public.generation_jobs add constraint generation_jobs_status_check check (status in ('submitted', 'processing', 'completed', 'failed', 'partial_completed')) not valid;
+alter table public.generation_jobs drop constraint if exists generation_jobs_expected_result_count_check;
+alter table public.generation_jobs add constraint generation_jobs_expected_result_count_check check (expected_result_count between 1 and 4) not valid;
 
 create index if not exists generation_jobs_user_id_idx on public.generation_jobs (user_id, created_at desc);
 create index if not exists generation_jobs_upstream_task_id_idx on public.generation_jobs (upstream_task_id);
@@ -171,6 +259,36 @@ values
   ('标准包', 39.00, 3900, 20),
   ('专业包', 99.00, 9900, 30)
 on conflict do nothing;
+
+insert into public.credit_packages (
+  name,
+  package_type,
+  price_cny,
+  credits,
+  membership_tier,
+  membership_duration_days,
+  membership_free_image_qualities,
+  sort_order
+)
+select 'VIP199', 'membership', 199.00, 0, 'vip', 365, '["1K", "2K"]'::jsonb, 40
+where not exists (
+  select 1 from public.credit_packages where name = 'VIP199'
+);
+
+insert into public.credit_packages (
+  name,
+  package_type,
+  price_cny,
+  credits,
+  membership_tier,
+  membership_duration_days,
+  membership_free_image_qualities,
+  sort_order
+)
+select 'SVIP499', 'membership', 499.00, 0, 'svip', 365, '["1K", "2K", "4K"]'::jsonb, 50
+where not exists (
+  select 1 from public.credit_packages where name = 'SVIP499'
+);
 
 insert into public.site_settings (key, value)
 values (
@@ -299,6 +417,9 @@ declare
   v_user_id uuid := auth.uid();
   v_code text := upper(trim(p_code));
   v_redeem public.redeem_codes%rowtype;
+  v_current_expires_at timestamptz;
+  v_current_tier text;
+  v_expires_at timestamptz;
   v_ledger jsonb;
   v_balance integer;
 begin
@@ -328,9 +449,73 @@ begin
     raise exception '该兑换码已被使用。';
   end if;
 
+  if v_redeem.package_type = 'membership' then
+    if v_redeem.membership_tier is null or v_redeem.membership_duration_days is null then
+      raise exception '会员兑换码配置不完整，请联系管理员。';
+    end if;
+
+    if jsonb_typeof(coalesce(v_redeem.membership_free_image_qualities, '[]'::jsonb)) <> 'array' then
+      raise exception '会员权益配置不正确，请联系管理员。';
+    end if;
+  end if;
+
   insert into public.user_accounts (user_id)
   values (v_user_id)
   on conflict (user_id) do nothing;
+
+  if v_redeem.package_type = 'membership' then
+    select membership_tier, membership_expires_at
+    into v_current_tier, v_current_expires_at
+    from public.user_accounts
+    where user_id = v_user_id
+    for update;
+
+    if v_current_tier = 'svip'
+      and v_current_expires_at > now()
+      and v_redeem.membership_tier = 'vip'
+    then
+      raise exception '当前 SVIP 仍在有效期内，不能兑换低等级 VIP。';
+    end if;
+
+    v_expires_at := greatest(coalesce(v_current_expires_at, now()), now())
+      + (v_redeem.membership_duration_days * interval '1 day');
+
+    v_ledger := jsonb_build_object(
+      'id', 'ledger_' || extract(epoch from now())::bigint || '_' || v_code,
+      'type', 'redeem',
+      'code', v_code,
+      'amount', 0,
+      'createdAt', to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+    );
+
+    update public.redeem_codes
+    set
+      status = 'used',
+      used_by = v_user_id,
+      used_at = now(),
+      updated_at = now()
+    where code = v_code;
+
+    update public.user_accounts
+    set
+      membership_tier = v_redeem.membership_tier,
+      membership_expires_at = v_expires_at,
+      membership_free_image_qualities = v_redeem.membership_free_image_qualities,
+      redeemed_codes = to_jsonb(v_code) || redeemed_codes,
+      ledger = v_ledger || ledger,
+      updated_at = now()
+    where user_id = v_user_id
+    returning credit_balance into v_balance;
+
+    return jsonb_build_object(
+      'code', v_code,
+      'credits', 0,
+      'credit_balance', v_balance,
+      'membership_tier', v_redeem.membership_tier,
+      'membership_expires_at', v_expires_at,
+      'membership_free_image_qualities', v_redeem.membership_free_image_qualities
+    );
+  end if;
 
   v_ledger := jsonb_build_object(
     'id', 'ledger_' || extract(epoch from now())::bigint || '_' || v_code,
@@ -396,15 +581,21 @@ begin
   where user_id = v_user_id
   for update;
 
-  select coalesce(array_agg(value->>'id'), array[]::text[])
+  select coalesce(array_agg(key), array[]::text[])
   into v_incoming_ids
-  from jsonb_array_elements(coalesce(p_projects, '[]'::jsonb))
-  where value ? 'id';
+  from jsonb_array_elements(coalesce(p_projects, '[]'::jsonb)) as project(value)
+  cross join lateral (
+    values (value->>'id'), (value->>'taskId')
+  ) as keys(key)
+  where key is not null and key <> '';
 
   select coalesce(jsonb_agg(value), '[]'::jsonb)
   into v_projects
   from jsonb_array_elements(coalesce(v_existing_projects, '[]'::jsonb))
-  where not (value->>'id' = any(v_incoming_ids));
+  where not (
+    value->>'id' = any(v_incoming_ids)
+    or coalesce(value->>'taskId', '') = any(v_incoming_ids)
+  );
 
   for v_project in select value from jsonb_array_elements(coalesce(p_projects, '[]'::jsonb))
   loop
@@ -632,6 +823,56 @@ begin
 end;
 $$;
 
+create or replace function public.record_free_generation_usage(
+  p_user_id uuid,
+  p_reason text,
+  p_reference text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_reference text := trim(p_reference);
+  v_ledger jsonb;
+  v_balance integer;
+begin
+  if p_user_id is null then
+    raise exception '缺少用户 ID。';
+  end if;
+
+  if v_reference = '' then
+    raise exception '缺少会员免费流水号。';
+  end if;
+
+  insert into public.user_accounts (user_id)
+  values (p_user_id)
+  on conflict (user_id) do nothing;
+
+  v_ledger := jsonb_build_object(
+    'id', v_reference,
+    'type', 'generate',
+    'code', coalesce(p_reason, 'AI 生成会员免费'),
+    'amount', 0,
+    'createdAt', to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+  );
+
+  update public.user_accounts
+  set
+    ledger = v_ledger || ledger,
+    updated_at = now()
+  where user_id = p_user_id
+  returning credit_balance into v_balance;
+
+  return jsonb_build_object(
+    'amount', 0,
+    'credit_balance', v_balance,
+    'reference', v_reference
+  );
+end;
+$$;
+
 create or replace function public.refund_generation_credits(
   p_user_id uuid,
   p_amount integer,
@@ -716,6 +957,8 @@ grant execute on function public.save_user_projects(jsonb) to authenticated;
 grant execute on function public.spend_credits(integer, text, text) to authenticated;
 revoke execute on function public.refund_credits(integer, text, text) from public, anon, authenticated;
 revoke execute on function public.spend_generation_credits(uuid, integer, text, text) from public, anon, authenticated;
+revoke execute on function public.record_free_generation_usage(uuid, text, text) from public, anon, authenticated;
 revoke execute on function public.refund_generation_credits(uuid, integer, text, text) from public, anon, authenticated;
 grant execute on function public.spend_generation_credits(uuid, integer, text, text) to service_role;
+grant execute on function public.record_free_generation_usage(uuid, text, text) to service_role;
 grant execute on function public.refund_generation_credits(uuid, integer, text, text) to service_role;

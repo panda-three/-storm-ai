@@ -97,6 +97,27 @@ export async function spendGenerationCredits({
   return data as { amount: number; credit_balance: number; reference: string }
 }
 
+export async function recordFreeGenerationUsage({
+  reason,
+  reference,
+  userId,
+}: {
+  reason: string
+  reference: string
+  userId: string
+}) {
+  const { data, error } = await getSupabaseServerClient().rpc("record_free_generation_usage", {
+    p_reason: reason,
+    p_reference: reference,
+    p_user_id: userId,
+  })
+
+  if (error) {
+    throw new Error(describeServerError(error, "记录会员免费使用失败。"), { cause: error })
+  }
+  return data as { amount: number; credit_balance: number; reference: string }
+}
+
 export async function refundGenerationCredits({
   amount,
   reason,
@@ -147,6 +168,72 @@ export async function uploadGeneratedImage({
   }
 
   return data.publicUrl
+}
+
+export async function deleteGeneratedImageByPublicUrl(publicUrl: string) {
+  const bucket = process.env.SUPABASE_GENERATED_IMAGES_BUCKET ?? "generated-images"
+  const marker = `/storage/v1/object/public/${bucket}/`
+  const markerIndex = publicUrl.indexOf(marker)
+
+  if (markerIndex === -1) return
+
+  const path = decodeURIComponent(publicUrl.slice(markerIndex + marker.length).split("?")[0] ?? "")
+  if (!path) return
+
+  const { error } = await getSupabaseServerClient().storage.from(bucket).remove([path])
+  if (error) {
+    console.warn("[Supabase Storage] generated image cleanup failed", {
+      error: describeServerError(error, "清理生成图片失败。"),
+      path,
+    })
+  }
+}
+
+const remoteImageMaxBytes = 25 * 1024 * 1024
+const allowedRemoteImageContentTypes = new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"])
+
+export async function persistRemoteGeneratedImage({
+  sourceUrl,
+  userId,
+}: {
+  sourceUrl: string
+  userId: string
+}) {
+  let response: Response
+
+  try {
+    response = await fetch(sourceUrl, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(30000),
+    })
+  } catch (error) {
+    throw new Error(`生成图片地址不可访问：${describeServerError(error, "请求图片失败。")}`, { cause: error })
+  }
+
+  if (!response.ok) {
+    throw new Error(`生成图片地址不可访问：HTTP ${response.status}。`)
+  }
+
+  const contentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? ""
+  if (!allowedRemoteImageContentTypes.has(contentType)) {
+    throw new Error(`生成结果不是可用图片内容：${contentType || "未知类型"}。`)
+  }
+
+  const contentLength = Number(response.headers.get("content-length"))
+  if (Number.isFinite(contentLength) && contentLength > remoteImageMaxBytes) {
+    throw new Error("生成图片超过 25MB，无法保存到历史项目。")
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer())
+  if (buffer.byteLength > remoteImageMaxBytes) {
+    throw new Error("生成图片超过 25MB，无法保存到历史项目。")
+  }
+
+  return uploadGeneratedImage({
+    buffer,
+    contentType,
+    userId,
+  })
 }
 
 export function describeServerError(error: unknown, fallback: string) {

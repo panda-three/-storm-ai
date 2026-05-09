@@ -12,7 +12,13 @@ import {
   saveLocalAccount,
   type LocalAccountData,
 } from "@/lib/local-store"
-import { mergeProjectHistories, normalizeProjectItem, type ProjectItem } from "@/lib/project-history"
+import {
+  createDeletedProjectItem,
+  isDeletedProjectItem,
+  mergeProjectHistories,
+  normalizeProjectItem,
+  type ProjectItem,
+} from "@/lib/project-history"
 import {
   type CreditPackage,
   type CustomerServiceSettings,
@@ -58,11 +64,22 @@ function createAccountFromRemote(userId: string, remoteAccount: Awaited<ReturnTy
   return {
     creditBalance: remoteAccount?.credit_balance ?? 0,
     ledger: remoteAccount?.ledger ?? [],
+    membershipExpiresAt: remoteAccount?.membership_expires_at ?? null,
+    membershipFreeImageQualities: remoteAccount?.membership_free_image_qualities ?? [],
+    membershipTier: remoteAccount?.membership_tier ?? null,
     projects: (remoteAccount?.projects ?? []).map(normalizeProjectItem),
     redeemedCodes: remoteAccount?.redeemed_codes ?? [],
     role: remoteAccount?.role ?? "user",
     userId,
   }
+}
+
+function visibleProjects(projects: ProjectItem[]) {
+  return projects.filter((project) => !isDeletedProjectItem(project))
+}
+
+function isSameProject(a: ProjectItem, b: ProjectItem) {
+  return a.id === b.id || Boolean(a.taskId && a.taskId === b.taskId)
 }
 
 async function loadServerHistoryProjects() {
@@ -339,9 +356,11 @@ export default function Home() {
   const addProject = useCallback((project: ProjectItem) => {
     setAccount((current) => {
       if (!current) return current
+      if (current.projects.some((item) => isDeletedProjectItem(item) && isSameProject(item, project))) return current
+
       return {
         ...current,
-        projects: [normalizeProjectItem(project), ...current.projects.filter((item) => item.id !== project.id)],
+        projects: [normalizeProjectItem(project), ...current.projects.filter((item) => !isSameProject(item, project))],
       }
     })
   }, [])
@@ -349,10 +368,12 @@ export default function Home() {
   const updateProject = useCallback((project: ProjectItem) => {
     setAccount((current) => {
       if (!current) return current
+      if (current.projects.some((item) => isDeletedProjectItem(item) && isSameProject(item, project))) return current
+
       return {
         ...current,
-        projects: current.projects.some((item) => item.id === project.id)
-          ? current.projects.map((item) => (item.id === project.id ? normalizeProjectItem({ ...item, ...project }) : item))
+        projects: current.projects.some((item) => isSameProject(item, project))
+          ? current.projects.map((item) => (isSameProject(item, project) ? normalizeProjectItem({ ...item, ...project }) : item))
           : [normalizeProjectItem(project), ...current.projects],
       }
     })
@@ -361,9 +382,12 @@ export default function Home() {
   const deleteProject = useCallback((id: string) => {
     setAccount((current) => {
       if (!current) return current
+      const project = current.projects.find((item) => item.id === id)
+      if (!project) return current
+
       return {
         ...current,
-        projects: current.projects.filter((item) => item.id !== id),
+        projects: [createDeletedProjectItem(project), ...current.projects.filter((item) => item.id !== id)],
       }
     })
   }, [])
@@ -464,12 +488,15 @@ export default function Home() {
           creditPackages={creditPackages.filter((item) => item.enabled)}
           customerService={customerService}
           ledger={account.ledger}
+          membershipExpiresAt={account.membershipExpiresAt}
+          membershipFreeImageQualities={account.membershipFreeImageQualities}
+          membershipTier={account.membershipTier}
           modelPricing={modelPricing.filter((item) => item.enabled)}
           onProjectAdd={addProject}
           onProjectDelete={deleteProject}
           onProjectUpdate={updateProject}
           onAccountRefresh={refreshAccount}
-          projects={account.projects}
+          projects={visibleProjects(account.projects)}
           redeemedCodes={account.redeemedCodes}
           sidebarOpen={sidebarOpen}
           onSectionChange={setActiveSection}

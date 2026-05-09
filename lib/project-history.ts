@@ -2,7 +2,7 @@ import { formatLedgerDateTime } from "@/lib/date-time"
 import type { GenerationJob } from "@/lib/generation-jobs"
 
 export type ProjectType = "生图" | "视频"
-export type ProjectStatus = "已完成" | "生成中" | "失败"
+export type ProjectStatus = "已完成" | "生成中" | "失败" | "部分完成"
 
 export interface ProjectItem {
   id: string
@@ -10,9 +10,11 @@ export interface ProjectItem {
   type: ProjectType
   status: ProjectStatus
   time: string
+  deletedAt?: string
   model?: string
   palette?: string
   prompt?: string
+  imageUrls?: string[]
   previewLabel?: string
   previewUrl?: string
   taskId?: string
@@ -23,7 +25,9 @@ export function normalizeProjectItem(project: ProjectItem): ProjectItem {
   const rawStatus = String(project.status ?? "").trim().toLowerCase()
   let status: ProjectStatus
 
-  if (["已完成", "completed", "complete", "success", "succeeded", "done", "finished"].includes(rawStatus)) {
+  if (["部分完成", "partial_completed", "partial completed", "partially_completed", "partial"].includes(rawStatus)) {
+    status = "部分完成"
+  } else if (["已完成", "completed", "complete", "success", "succeeded", "done", "finished"].includes(rawStatus)) {
     status = "已完成"
   } else if (["生成中", "submitted", "processing", "pending", "running"].includes(rawStatus)) {
     status = "生成中"
@@ -37,16 +41,55 @@ export function normalizeProjectItem(project: ProjectItem): ProjectItem {
     status = "生成中"
   }
 
+  const imageUrls = normalizeImageUrls(project.imageUrls, project.previewUrl)
+
   return {
     ...project,
+    imageUrls,
+    previewUrl: project.previewUrl || imageUrls[0] || "",
     status,
   }
 }
 
+export function isDeletedProjectItem(project: ProjectItem) {
+  return Boolean(project.deletedAt)
+}
+
+function getProjectKeys(project: ProjectItem) {
+  return [project.taskId, project.id].filter(Boolean) as string[]
+}
+
+export function createDeletedProjectItem(project: ProjectItem): ProjectItem {
+  return normalizeProjectItem({
+    id: project.id,
+    title: project.title || "已删除项目",
+    type: project.type,
+    status: project.status,
+    time: project.time,
+    deletedAt: new Date().toISOString(),
+    taskId: project.taskId,
+  })
+}
+
 function normalizeGenerationJobStatus(status: GenerationJob["status"]): ProjectStatus {
   if (status === "completed") return "已完成"
+  if (status === "partial_completed") return "部分完成"
   if (status === "failed") return "失败"
   return "生成中"
+}
+
+function normalizeImageUrls(imageUrls: unknown, previewUrl?: string) {
+  const urls = Array.isArray(imageUrls) ? imageUrls.filter((url): url is string => typeof url === "string" && url.length > 0) : []
+  if (previewUrl && !urls.includes(previewUrl)) {
+    return [previewUrl, ...urls]
+  }
+  return urls
+}
+
+function mergeImageUrls(primary: ProjectItem, fallback: ProjectItem) {
+  return Array.from(
+    new Set([...(primary.imageUrls ?? []), ...(fallback.imageUrls ?? [])].filter((url): url is string => Boolean(url)))
+  )
 }
 
 export function generationJobToProjectItem(job: GenerationJob): ProjectItem {
@@ -62,6 +105,7 @@ export function generationJobToProjectItem(job: GenerationJob): ProjectItem {
     model: job.model,
     palette: isImage ? "from-indigo-500 via-sky-400 to-emerald-300" : "from-slate-950 via-indigo-700 to-cyan-400",
     prompt: job.prompt,
+    imageUrls: isImage ? resultUrls : [],
     previewUrl: resultUrls[0] ?? "",
     taskId: job.id,
     taskError: job.task_error ?? "",
@@ -72,28 +116,34 @@ export function mergeProjectHistories(serverProjects: ProjectItem[], localProjec
   const merged: ProjectItem[] = []
   const indexesByKey = new Map<string, number>()
 
-  const getKeys = (project: ProjectItem) => [project.taskId, project.id].filter(Boolean) as string[]
-
   const addProject = (project: ProjectItem, preferServerFields: boolean) => {
     const normalized = normalizeProjectItem(project)
-    const existingIndex = getKeys(normalized)
+    const existingIndex = getProjectKeys(normalized)
       .map((key) => indexesByKey.get(key))
       .find((index): index is number => typeof index === "number")
 
     if (existingIndex === undefined) {
       const nextIndex = merged.length
       merged.push(normalized)
-      getKeys(normalized).forEach((key) => indexesByKey.set(key, nextIndex))
+      getProjectKeys(normalized).forEach((key) => indexesByKey.set(key, nextIndex))
       return
     }
 
     const existing = merged[existingIndex]
+    if (isDeletedProjectItem(existing) || isDeletedProjectItem(normalized)) {
+      merged[existingIndex] = isDeletedProjectItem(normalized) ? normalized : existing
+      getProjectKeys(merged[existingIndex]).forEach((key) => indexesByKey.set(key, existingIndex))
+      return
+    }
+
     merged[existingIndex] = preferServerFields
       ? normalizeProjectItem({
           ...normalized,
           id: existing.id,
           palette: existing.palette ?? normalized.palette,
+          imageUrls: mergeImageUrls(normalized, existing),
           previewLabel: existing.previewLabel ?? normalized.previewLabel,
+          previewUrl: normalized.previewUrl || existing.previewUrl,
           title: existing.title || normalized.title,
         })
       : normalizeProjectItem({
@@ -101,6 +151,7 @@ export function mergeProjectHistories(serverProjects: ProjectItem[], localProjec
           status: existing.status,
           id: normalized.id,
           palette: normalized.palette ?? existing.palette,
+          imageUrls: mergeImageUrls(existing, normalized),
           previewLabel: normalized.previewLabel ?? existing.previewLabel,
           previewUrl: existing.previewUrl || normalized.previewUrl,
           taskError: existing.taskError || normalized.taskError,

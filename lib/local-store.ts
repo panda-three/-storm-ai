@@ -10,9 +10,14 @@ export interface CreditLedgerItem {
   type: "redeem" | "generate" | "refund"
 }
 
+export type MembershipTier = "vip" | "svip"
+
 export interface LocalAccountData {
   creditBalance: number
   ledger: CreditLedgerItem[]
+  membershipExpiresAt: string | null
+  membershipFreeImageQualities: string[]
+  membershipTier: MembershipTier | null
   projects: ProjectItem[]
   redeemedCodes: string[]
   role: "user" | "admin"
@@ -23,6 +28,9 @@ export function createDefaultAccount(): LocalAccountData {
   return {
     creditBalance: 0,
     ledger: [],
+    membershipExpiresAt: null,
+    membershipFreeImageQualities: [],
+    membershipTier: null,
     projects: [],
     redeemedCodes: [],
     role: "user",

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { createGenerationJob, updateGenerationJob } from "@/lib/generation-jobs"
 import { createVideoGeneration, normalizeVideoDuration, uploadApimartImage } from "@/lib/apimart"
+import { createMengfactoryVideo } from "@/lib/mengfactory"
 import { calculatePricingCredits, type ModelPricing } from "@/lib/supabase"
 import {
   getSupabaseServerClient,
@@ -8,8 +9,13 @@ import {
   refundGenerationCredits,
   requireAuthenticatedUser,
   spendGenerationCredits,
+  uploadGeneratedImage,
 } from "@/lib/server-supabase"
-import { videoModelSettings } from "@/lib/model-options"
+import {
+  isMengfactoryVeoVideoModel,
+  legacyApimartVeoVideoModelName,
+  videoModelSettings,
+} from "@/lib/model-options"
 
 const maxReferenceImages = 4
 const maxReferenceImageBytes = 10 * 1024 * 1024
@@ -35,7 +41,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "请先输入视频提示词。" }, { status: 400 })
     }
 
-    const model = String(getValue("model") ?? "Gemini Veo 3.1 Fast")
+    const model = String(getValue("model") ?? legacyApimartVeoVideoModelName)
     const duration = String(getValue("duration") ?? "5 秒")
     const quality = String(getValue("quality") ?? "720P")
     const aspectRatio = String(getValue("aspectRatio") ?? "16:9")
@@ -90,16 +96,50 @@ export async function POST(request: Request) {
       amount: billingAmount,
       model,
       prompt,
-      provider: "apimart",
+      provider: isMengfactoryVeoVideoModel(model) ? "mengfactory" : "apimart",
       reference: billingReference,
       type: "video",
       userId,
     })
     jobId = job.id
 
-    const referenceImages = body instanceof FormData ? await uploadReferenceImages(body) : []
+    const referenceImages = body instanceof FormData ? getReferenceImages(body) : []
+
+    if (isMengfactoryVeoVideoModel(model)) {
+      const imageUrls = await uploadReferenceImagesToPublicUrls(referenceImages, userId)
+      const generationInput = {
+        imageUrls,
+        model,
+        prompt,
+        quality,
+        aspectRatio,
+      }
+      logGenerateVideo("generation input", generationInput)
+
+      const result = await createMengfactoryVideo(generationInput)
+      await updateGenerationJob(job.id, {
+        next_check_at: new Date(Date.now() + 5000).toISOString(),
+        status: result.status === "submitted" ? "submitted" : "processing",
+        upstream_task_id: result.taskId,
+      })
+
+      logGenerateVideo("output", result)
+
+      return NextResponse.json({
+        ...result,
+        taskId: job.id,
+        upstreamTaskId: result.taskId,
+      })
+    }
+
     const generationInput = {
-      referenceImages,
+      referenceImages: await Promise.all(referenceImages.map(async (image) => ({
+        url: await uploadApimartImage({
+          buffer: Buffer.from(await image.arrayBuffer()),
+          filename: image.name,
+          mimeType: image.type,
+        }),
+      }))),
       model,
       prompt,
       duration: normalizeVideoDuration(duration),
@@ -175,16 +215,17 @@ async function loadVideoPricing({
     .eq("model", model)
     .eq("quality", quality)
     .eq("duration_seconds", durationSeconds)
-    .maybeSingle()
+    .order("updated_at", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(1)
 
   if (error) {
     throw new Error(describeServerError(error, "读取视频模型价格失败。"), { cause: error })
   }
-  return data as ModelPricing | null
+  return (data?.[0] ?? null) as ModelPricing | null
 }
 
-async function uploadReferenceImages(formData: FormData) {
-  const referenceImages = []
+function getReferenceImages(formData: FormData) {
   const images = formData.getAll("referenceImages").filter(isImageFile)
 
   if (images.length > maxReferenceImages) {
@@ -199,19 +240,23 @@ async function uploadReferenceImages(formData: FormData) {
     if (image.size > maxReferenceImageBytes) {
       throw new Error("单张参考图不能超过 10MB。")
     }
-
-    const url = await uploadApimartImage({
-      buffer: Buffer.from(await image.arrayBuffer()),
-      filename: image.name,
-      mimeType: image.type,
-    })
-
-    if (url) {
-      referenceImages.push({ url })
-    }
   }
 
-  return referenceImages
+  return images
+}
+
+async function uploadReferenceImagesToPublicUrls(referenceImages: File[], userId: string) {
+  return Promise.all(
+    referenceImages.map(async (image) => {
+      const uploadedUrl = await uploadGeneratedImage({
+        buffer: Buffer.from(await image.arrayBuffer()),
+        contentType: image.type,
+        userId,
+      })
+
+      return uploadedUrl
+    })
+  )
 }
 
 function getReferenceImageLogs(formData: FormData) {

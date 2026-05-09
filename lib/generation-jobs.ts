@@ -2,7 +2,7 @@ import { getSupabaseServerClient } from "@/lib/server-supabase"
 import { describeServerError } from "@/lib/server-supabase"
 import type { GenerationKind, NormalizedTaskStatus } from "@/lib/apimart"
 
-export type GenerationJobStatus = "submitted" | "processing" | "completed" | "failed"
+export type GenerationJobStatus = "submitted" | "processing" | "completed" | "failed" | "partial_completed"
 
 export interface GenerationJob {
   id: string
@@ -14,6 +14,7 @@ export interface GenerationJob {
   last_sync_error: string | null
   model: string
   next_check_at: string | null
+  expected_result_count: number
   prompt: string
   provider: string
   reference: string
@@ -27,12 +28,13 @@ export interface GenerationJob {
 }
 
 const generationJobSelect =
-  "id, amount, check_attempts, completed_at, created_at, last_checked_at, last_sync_error, model, next_check_at, prompt, provider, reference, result_urls, status, sync_locked_until, task_error, type, upstream_task_id, user_id"
+  "id, amount, check_attempts, completed_at, created_at, expected_result_count, last_checked_at, last_sync_error, model, next_check_at, prompt, provider, reference, result_urls, status, sync_locked_until, task_error, type, upstream_task_id, user_id"
 const legacyGenerationJobSelect =
   "id, amount, created_at, model, prompt, provider, reference, result_urls, status, task_error, type, upstream_task_id, user_id"
 
 export async function createGenerationJob({
   amount,
+  expectedResultCount = 1,
   model,
   prompt,
   provider,
@@ -41,6 +43,7 @@ export async function createGenerationJob({
   userId,
 }: {
   amount: number
+  expectedResultCount?: number
   model: string
   prompt: string
   provider: string
@@ -52,6 +55,7 @@ export async function createGenerationJob({
     .from("generation_jobs")
     .insert({
       amount,
+      expected_result_count: expectedResultCount,
       model,
       prompt,
       provider,
@@ -189,6 +193,7 @@ function withDefaultSyncFields(job: Partial<GenerationJob>): GenerationJob {
   return {
     check_attempts: 0,
     completed_at: null,
+    expected_result_count: 1,
     last_checked_at: null,
     last_sync_error: null,
     next_check_at: null,
@@ -205,6 +210,7 @@ function isMissingSyncColumnError(error: unknown) {
     message.includes("last_checked_at") ||
     message.includes("last_sync_error") ||
     message.includes("next_check_at") ||
+    message.includes("expected_result_count") ||
     message.includes("sync_locked_until")
   )
 }
@@ -258,10 +264,14 @@ export function normalizeJobTaskStatus(job: GenerationJob): NormalizedTaskStatus
     mode: job.provider === "mock" ? "mock" : "apimart",
     taskId: job.id,
     status: job.status,
-    progress: job.status === "completed" || job.status === "failed" ? 100 : 0,
+    progress: isTerminalGenerationJobStatus(job.status) ? 100 : 0,
     imageUrls: isImage ? job.result_urls : [],
     videoUrl: isImage ? "" : job.result_urls[0] ?? "",
     taskError: job.task_error ?? "",
     raw: job,
   }
+}
+
+export function isTerminalGenerationJobStatus(status: GenerationJobStatus) {
+  return status === "completed" || status === "failed" || status === "partial_completed"
 }

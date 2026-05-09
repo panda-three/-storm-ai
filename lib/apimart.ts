@@ -2,7 +2,14 @@ import https from "node:https"
 import net from "node:net"
 import tls from "node:tls"
 import type { Duplex } from "node:stream"
-import { gptImage2ApiModelName, gptImage2ModelName, isGptImage2Model } from "@/lib/model-options"
+import {
+  gptImage2ApiModelName,
+  gptImage2ModelName,
+  gptImage2OfficialApiModelName,
+  grokImagineVideoModelName,
+  isGptImage2Model,
+  legacyApimartVeoVideoModelName,
+} from "@/lib/model-options"
 
 const APIMART_BASE_URL = process.env.APIMART_BASE_URL ?? "https://api.apimart.ai/v1"
 const APIMART_PROXY_URL = getApimartProxyUrl()
@@ -11,7 +18,7 @@ export type GenerationKind = "image" | "video"
 
 export interface GenerationResponse {
   ok: true
-  mode: "apimart" | "mock"
+  mode: "apimart" | "mengfactory" | "mock"
   taskId: string
   status: string
   type: GenerationKind
@@ -19,9 +26,9 @@ export interface GenerationResponse {
 
 export interface NormalizedTaskStatus {
   ok: true
-  mode: "apimart" | "mock"
+  mode: "apimart" | "mengfactory" | "mock"
   taskId: string
-  status: "submitted" | "processing" | "completed" | "failed"
+  status: "submitted" | "processing" | "completed" | "failed" | "partial_completed"
   progress: number
   imageUrls: string[]
   videoUrl: string
@@ -29,8 +36,12 @@ export interface NormalizedTaskStatus {
   raw: unknown
 }
 
+const mockImageUrl =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1024' height='1024' viewBox='0 0 1024 1024'%3E%3Crect width='1024' height='1024' fill='%23e0e7ff'/%3E%3Ctext x='512' y='512' dominant-baseline='middle' text-anchor='middle' fill='%234f46e5' font-family='Arial' font-size='48'%3EStorm AI Mock Image%3C/text%3E%3C/svg%3E"
+
 interface ApimartImageRequest {
   imageUrls?: string[]
+  imageCount?: number
   model: string
   prompt: string
   size: string
@@ -67,8 +78,8 @@ export const imageModelMap: Record<string, string> = {
 }
 
 export const videoModelMap: Record<string, string> = {
-  "Gemini Veo 3.1 Fast": "veo3.1-fast",
-  "Grok Imagine Video": "grok-imagine-1.0-video-apimart",
+  [legacyApimartVeoVideoModelName]: "veo3.1-fast",
+  [grokImagineVideoModelName]: "grok-imagine-1.0-video-apimart",
 }
 
 export function normalizeImageResolution(quality: string, model: string) {
@@ -122,13 +133,17 @@ export function normalizeTaskId(data: unknown) {
 }
 
 export async function createImageGeneration(request: ApimartImageRequest): Promise<GenerationResponse> {
-  const model = imageModelMap[request.model] ?? request.model
+  const imageCount = normalizeImageCount(request.imageCount)
+  const model =
+    isGptImage2Model(request.model) && imageCount > 1
+      ? gptImage2OfficialApiModelName
+      : imageModelMap[request.model] ?? request.model
   const apiKey = process.env.APIMART_API_KEY
   const payload = {
     model,
     prompt: request.prompt,
     size: request.size,
-    n: 1,
+    n: imageCount,
     resolution: request.resolution,
     ...(request.imageUrls?.length ? { image_urls: request.imageUrls } : {}),
   }
@@ -145,6 +160,11 @@ export async function createImageGeneration(request: ApimartImageRequest): Promi
   const result = normalizeGenerationResponse(response, "image")
   logApimart("images/generations normalized output", result)
   return result
+}
+
+function normalizeImageCount(value: number | undefined): number {
+  if (value === undefined) return 1
+  return Number.isInteger(value) && value >= 1 && value <= 4 ? value : 1
 }
 
 export async function uploadApimartImage(file: ApimartUploadFile) {
@@ -201,13 +221,15 @@ export async function createVideoGeneration(request: ApimartVideoRequest): Promi
 
 export async function getTaskStatus(taskId: string): Promise<NormalizedTaskStatus> {
   if (!process.env.APIMART_API_KEY || taskId.startsWith("mock_")) {
+    const isImageTask = taskId.startsWith("mock_image_")
+
     return {
       ok: true,
       mode: "mock",
       taskId,
       status: "completed",
       progress: 100,
-      imageUrls: [],
+      imageUrls: isImageTask ? [mockImageUrl] : [],
       videoUrl: "",
       taskError: "",
       raw: {},

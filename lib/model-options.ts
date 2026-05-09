@@ -1,10 +1,14 @@
 export const gptImage2ModelName = "GPT-Image-2"
 export const gptImage2ApiModelName = "gpt-image-2"
+export const gptImage2OfficialApiModelName = "gpt-image-2-official"
 export const gptImage2Supported4KRatios = ["16:9", "9:16", "2:1", "1:2", "21:9", "9:21"]
 export const mengfactoryGeminiImageModelName = "Gemini 3.1 Flash Image Preview"
 export const mengfactoryGeminiImageApiModelName = "gemini-3.1-flash-image-preview"
+export const mengfactoryVeoVideoModelName = "VEO 3.1 FAST"
+export const legacyApimartVeoVideoModelName = "Gemini Veo 3.1 Fast"
+export const grokImagineVideoModelName = "Grok Imagine Video"
 
-export const imageModelOptions = ["Gemini Nano Banana Pro", mengfactoryGeminiImageModelName, gptImage2ModelName]
+export const imageModelOptions = [mengfactoryGeminiImageModelName, gptImage2ModelName]
 
 export const imageModelSettings: Record<
   string,
@@ -47,7 +51,12 @@ export function isValidImageRatioForQuality(model: string, quality: string, rati
   return !isGptImage2Restricted4K(quality, model) || gptImage2Supported4KRatios.includes(ratio)
 }
 
-export const videoModelOptions = ["Gemini Veo 3.1 Fast", "Grok Imagine Video"]
+export const videoModelOptions = [mengfactoryVeoVideoModelName, grokImagineVideoModelName]
+export const adminVideoModelOptions = [
+  mengfactoryVeoVideoModelName,
+  legacyApimartVeoVideoModelName,
+  grokImagineVideoModelName,
+]
 
 export const videoModelSettings: Record<
   string,
@@ -57,14 +66,27 @@ export const videoModelSettings: Record<
     qualities: string[]
   }
 > = {
-  "Gemini Veo 3.1 Fast": {
+  [mengfactoryVeoVideoModelName]: {
     aspectRatios: ["16:9", "9:16"],
     durations: ["8 秒"],
     qualities: ["720P", "1080P", "4K"],
   },
-  "Grok Imagine Video": {
+  [legacyApimartVeoVideoModelName]: {
+    aspectRatios: ["16:9", "9:16"],
+    durations: ["8 秒"],
+    qualities: ["720P", "1080P", "4K"],
+  },
+  [grokImagineVideoModelName]: {
     aspectRatios: ["16:9", "9:16", "1:1", "3:2", "2:3"],
     durations: ["6 秒", "10 秒", "15 秒", "30 秒"],
     qualities: ["480P", "720P"],
   },
+}
+
+export function isMengfactoryVeoVideoModel(model: string) {
+  return model === mengfactoryVeoVideoModelName
+}
+
+export function getMengfactoryVeoVideoApiModel(quality: string) {
+  return quality.trim().toUpperCase() === "4K" ? "veo3.1-4k" : "veo3.1-fast"
 }
