@@ -52,6 +52,18 @@ async function clearLocalSupabaseSession(supabase: SupabaseClient) {
 }
 
 export type WorkspaceSection = "image" | "video" | "history" | "credits" | "admin"
+type AccountStatus = "idle" | "loading" | "ready" | "error"
+
+function createAccountFromRemote(userId: string, remoteAccount: Awaited<ReturnType<typeof loadSupabaseAccount>>): LocalAccountData {
+  return {
+    creditBalance: remoteAccount?.credit_balance ?? 0,
+    ledger: remoteAccount?.ledger ?? [],
+    projects: (remoteAccount?.projects ?? []).map(normalizeProjectItem),
+    redeemedCodes: remoteAccount?.redeemed_codes ?? [],
+    role: remoteAccount?.role ?? "user",
+    userId,
+  }
+}
 
 async function loadServerHistoryProjects() {
   const supabase = getSupabaseClient()
@@ -80,7 +92,8 @@ async function loadServerHistoryProjects() {
 }
 
 export default function Home() {
-  const [account, setAccount] = useState<LocalAccountData>(() => loadLocalAccount())
+  const [account, setAccount] = useState<LocalAccountData | null>(() => loadLocalAccount())
+  const [accountStatus, setAccountStatus] = useState<AccountStatus>("idle")
   const [authReady, setAuthReady] = useState(false)
   const [user, setUser] = useState<User | null>(null)
   const [syncError, setSyncError] = useState("")
@@ -96,6 +109,8 @@ export default function Home() {
   const [redeemCodes, setRedeemCodes] = useState<RedeemCode[]>([])
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [activeSection, setActiveSection] = useState<WorkspaceSection>("image")
+  const accountUserId = account?.userId ?? ""
+  const accountRole = account?.role ?? "user"
 
   useEffect(() => {
     let active = true
@@ -159,26 +174,41 @@ export default function Home() {
     let active = true
 
     async function loadAccount() {
-      if (!user) return
+      if (!user) {
+        setAccountStatus("idle")
+        setAccount(loadLocalAccount())
+        return
+      }
 
       try {
         setSyncError("")
-        const [remoteAccount, serverProjects] = await Promise.all([
-          loadSupabaseAccount(user.id),
-          loadServerHistoryProjects(),
-        ])
+        setAccountStatus("loading")
+        setAccount(null)
+        const remoteAccount = await loadSupabaseAccount(user.id)
         if (!active) return
 
-        const accountProjects = (remoteAccount?.projects ?? []).map(normalizeProjectItem)
-        setAccount({
-          creditBalance: remoteAccount?.credit_balance ?? 0,
-          ledger: remoteAccount?.ledger ?? [],
-          projects: mergeProjectHistories(serverProjects, accountProjects),
-          redeemedCodes: remoteAccount?.redeemed_codes ?? [],
-          role: remoteAccount?.role ?? "user",
-          userId: user.id,
-        })
+        setAccount(createAccountFromRemote(user.id, remoteAccount))
+        setAccountStatus("ready")
+
+        loadServerHistoryProjects()
+          .then((serverProjects) => {
+            if (!active) return
+            setAccount((current) => {
+              if (!current || current.userId !== user.id) return current
+              return {
+                ...current,
+                projects: mergeProjectHistories(serverProjects, current.projects),
+              }
+            })
+          })
+          .catch((error) => {
+            if (!active) return
+            setSyncError(getErrorMessage(error, "读取生成历史失败。"))
+          })
       } catch (error) {
+        if (!active) return
+        setAccount(null)
+        setAccountStatus("error")
         setSyncError(getErrorMessage(error, "加载 Supabase 数据失败。"))
       }
     }
@@ -195,59 +225,77 @@ export default function Home() {
 
     try {
       setSyncError("")
-      const [remoteAccount, serverProjects] = await Promise.all([
-        loadSupabaseAccount(user.id),
-        loadServerHistoryProjects(),
-      ])
-      const accountProjects = (remoteAccount?.projects ?? []).map(normalizeProjectItem)
+      const remoteAccount = await loadSupabaseAccount(user.id)
+      const refreshedAccount = createAccountFromRemote(user.id, remoteAccount)
       setAccount((current) => ({
-        creditBalance: remoteAccount?.credit_balance ?? 0,
-        ledger: remoteAccount?.ledger ?? [],
-        projects: mergeProjectHistories(serverProjects, mergeProjectHistories(current.projects, accountProjects)),
-        redeemedCodes: remoteAccount?.redeemed_codes ?? [],
-        role: remoteAccount?.role ?? "user",
-        userId: user.id,
+        ...refreshedAccount,
+        projects: mergeProjectHistories(current?.projects ?? [], refreshedAccount.projects),
       }))
+      setAccountStatus("ready")
+
+      loadServerHistoryProjects()
+        .then((serverProjects) => {
+          setAccount((current) => {
+            if (!current || current.userId !== user.id) return current
+            return {
+              ...current,
+              projects: mergeProjectHistories(serverProjects, current.projects),
+            }
+          })
+        })
+        .catch((error) => {
+          setSyncError(getErrorMessage(error, "读取生成历史失败。"))
+        })
     } catch (error) {
+      setAccount((current) => {
+        if (!current) setAccountStatus("error")
+        return current
+      })
       setSyncError(getErrorMessage(error, "刷新 Supabase 数据失败。"))
     }
   }
 
   const refreshBillingConfig = useCallback(async () => {
-    if (!user) {
+    if (!user || accountStatus !== "ready" || accountUserId !== user.id) {
       setBillingReady(false)
+      setAdminAccounts([])
+      setRedeemCodes([])
       return
     }
 
     try {
       setSyncError("")
       setBillingReady(false)
+      const includeDisabled = accountRole === "admin"
       const [settings, packages, pricing] = await Promise.all([
         loadCustomerServiceSettings(),
-        loadCreditPackages({ includeDisabled: account.role === "admin" }),
-        loadModelPricing({ includeDisabled: account.role === "admin" }),
+        loadCreditPackages({ includeDisabled }),
+        loadModelPricing({ includeDisabled }),
       ])
       setCustomerService(settings)
       setCreditPackages(packages)
       setModelPricing(pricing)
-      if (account.role === "admin") {
+      if (includeDisabled) {
         const [codes, accounts] = await Promise.all([loadRedeemCodes(), loadAdminAccounts()])
         setRedeemCodes(codes)
         setAdminAccounts(accounts)
+      } else {
+        setRedeemCodes([])
+        setAdminAccounts([])
       }
       setBillingReady(true)
     } catch (error) {
       setSyncError(getErrorMessage(error, "加载充值配置失败。"))
       setBillingReady(true)
     }
-  }, [account.role, user])
+  }, [accountRole, accountStatus, accountUserId, user])
 
   useEffect(() => {
     refreshBillingConfig()
   }, [refreshBillingConfig])
 
   useEffect(() => {
-    if (!user || account.userId !== user.id) return
+    if (!user || !account || accountStatus !== "ready" || account.userId !== user.id) return
 
     const timer = window.setTimeout(() => {
       saveSupabaseAccount(account).catch((error) => {
@@ -256,34 +304,48 @@ export default function Home() {
     }, 400)
 
     return () => window.clearTimeout(timer)
-  }, [account, user])
+  }, [account, accountStatus, user])
 
   useEffect(() => {
-    if (user) return
+    if (user || !account) return
     saveLocalAccount(account)
   }, [account, user])
 
+  useEffect(() => {
+    if (!account || account.role === "admin" || activeSection !== "admin") return
+    setActiveSection("image")
+  }, [account, activeSection])
+
   const addProject = useCallback((project: ProjectItem) => {
-    setAccount((current) => ({
-      ...current,
-      projects: [normalizeProjectItem(project), ...current.projects.filter((item) => item.id !== project.id)],
-    }))
+    setAccount((current) => {
+      if (!current) return current
+      return {
+        ...current,
+        projects: [normalizeProjectItem(project), ...current.projects.filter((item) => item.id !== project.id)],
+      }
+    })
   }, [])
 
   const updateProject = useCallback((project: ProjectItem) => {
-    setAccount((current) => ({
-      ...current,
-      projects: current.projects.some((item) => item.id === project.id)
-        ? current.projects.map((item) => (item.id === project.id ? normalizeProjectItem({ ...item, ...project }) : item))
-        : [normalizeProjectItem(project), ...current.projects],
-    }))
+    setAccount((current) => {
+      if (!current) return current
+      return {
+        ...current,
+        projects: current.projects.some((item) => item.id === project.id)
+          ? current.projects.map((item) => (item.id === project.id ? normalizeProjectItem({ ...item, ...project }) : item))
+          : [normalizeProjectItem(project), ...current.projects],
+      }
+    })
   }, [])
 
   const deleteProject = useCallback((id: string) => {
-    setAccount((current) => ({
-      ...current,
-      projects: current.projects.filter((item) => item.id !== id),
-    }))
+    setAccount((current) => {
+      if (!current) return current
+      return {
+        ...current,
+        projects: current.projects.filter((item) => item.id !== id),
+      }
+    })
   }, [])
 
   const handleSignOut = async () => {
@@ -298,6 +360,7 @@ export default function Home() {
     }
     setUser(null)
     setAccount(createDefaultAccount())
+    setAccountStatus("idle")
   }
 
   if (!authReady) {
@@ -312,7 +375,25 @@ export default function Home() {
     return <AuthPanel onAuthed={() => undefined} />
   }
 
-  if (account.userId !== user.id) {
+  if (accountStatus === "error") {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#f7f8fb] px-4 text-slate-950">
+        <div className="w-full max-w-sm rounded-lg border border-slate-200 bg-white p-5 text-center shadow-sm">
+          <h1 className="text-base font-semibold">账户加载失败</h1>
+          <p className="mt-2 text-sm text-slate-500">{syncError || "加载 Supabase 数据失败。"}</p>
+          <button
+            className="mt-4 inline-flex h-10 items-center justify-center rounded-md bg-indigo-600 px-4 text-sm font-medium text-white hover:bg-indigo-700"
+            onClick={refreshAccount}
+            type="button"
+          >
+            重试
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (accountStatus !== "ready" || !account || account.userId !== user.id) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[#f7f8fb] text-sm text-slate-500">
         正在加载账户...
