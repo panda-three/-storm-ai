@@ -95,6 +95,13 @@ const maxReferenceImageBytes = 10 * 1024 * 1024
 const supportedReferenceImageTypes = ["image/jpeg", "image/png", "image/webp"]
 const imageDefaultRatioOption = "默认"
 const activeTaskPolls = new Set<string>()
+const taskInitialPollDelayMs = 15000
+const taskEarlyPollIntervalMs = 15000
+const taskMiddlePollIntervalMs = 30000
+const taskLatePollIntervalMs = 60000
+const taskEarlyPollWindowMs = 2 * 60 * 1000
+const taskMiddlePollWindowMs = 5 * 60 * 1000
+const taskMaxPollDurationMs = 20 * 60 * 1000
 
 interface ReferenceImage {
   file: File
@@ -119,6 +126,17 @@ function downloadAsset(url: string, filename: string) {
   link.href = downloadUrl
   link.download = filename
   link.rel = "noreferrer"
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+}
+
+function downloadVideoDirect(url: string, filename: string) {
+  const link = document.createElement("a")
+  link.href = url
+  link.download = filename
+  link.rel = "noreferrer"
+  link.target = "_blank"
   document.body.appendChild(link)
   link.click()
   link.remove()
@@ -274,14 +292,12 @@ function PricingLoadingNotice() {
 
 async function pollTask({
   accessToken,
-  intervalMs = 15000,
-  maxAttempts = 80,
+  initialDelayMs = taskInitialPollDelayMs,
   onUpdate,
   taskId,
 }: {
   accessToken: string
-  intervalMs?: number
-  maxAttempts?: number
+  initialDelayMs?: number
   onUpdate: (task: TaskStatusResponse) => void
   taskId: string
 }) {
@@ -290,10 +306,11 @@ async function pollTask({
   activeTaskPolls.add(taskId)
 
   try {
-    let retryDelay = intervalMs
+    const startedAt = Date.now()
+    let nextDelay = initialDelayMs
 
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      await new Promise((resolve) => window.setTimeout(resolve, attempt === 0 ? 5000 : retryDelay))
+    while (Date.now() - startedAt < taskMaxPollDurationMs) {
+      await new Promise((resolve) => window.setTimeout(resolve, nextDelay))
 
       const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
         headers: {
@@ -304,25 +321,32 @@ async function pollTask({
 
       if (!response.ok || !task.ok) {
         if (task.retryable || response.status === 429) {
-          retryDelay = Math.min(120000, intervalMs * 2 ** Math.min(attempt + 1, 3))
+          nextDelay = Math.min(120000, nextDelay * 2)
           continue
         }
 
         throw new Error(task.error ?? "任务状态查询失败。")
       }
 
-      retryDelay = intervalMs
       onUpdate(task)
 
       if (task.status === "completed" || task.status === "failed") {
         return
       }
+
+      nextDelay = getTaskPollDelay(Date.now() - startedAt)
     }
 
     throw new TaskPollingTimeoutError()
   } finally {
     activeTaskPolls.delete(taskId)
   }
+}
+
+function getTaskPollDelay(elapsedMs: number) {
+  if (elapsedMs < taskEarlyPollWindowMs) return taskEarlyPollIntervalMs
+  if (elapsedMs < taskMiddlePollWindowMs) return taskMiddlePollIntervalMs
+  return taskLatePollIntervalMs
 }
 
 interface ImageResult {
@@ -1609,7 +1633,14 @@ function HistoryDetailPanel({
 
     const fallback = item.type === "视频" ? "mp4" : "png"
     const extension = getAssetExtension(item.previewUrl, fallback)
-    downloadAsset(item.previewUrl, `${item.type === "视频" ? "video" : "image"}-${item.id}.${extension}`)
+    const filename = `${item.type === "视频" ? "video" : "image"}-${item.id}.${extension}`
+
+    if (item.type === "视频") {
+      downloadVideoDirect(item.previewUrl, filename)
+      return
+    }
+
+    downloadAsset(item.previewUrl, filename)
   }
 
   return (
@@ -2061,7 +2092,7 @@ function VideoResultPanel({
     if (!result?.videoUrl) return
 
     const extension = getAssetExtension(result.videoUrl, "mp4")
-    downloadAsset(result.videoUrl, `video-${result.id}.${extension}`)
+    downloadVideoDirect(result.videoUrl, `video-${result.id}.${extension}`)
   }
 
   if (isGenerating || result?.status === "生成中") {
