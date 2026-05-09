@@ -109,6 +109,7 @@ export default function Home() {
   const [redeemCodes, setRedeemCodes] = useState<RedeemCode[]>([])
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [activeSection, setActiveSection] = useState<WorkspaceSection>("image")
+  const userId = user?.id ?? ""
   const accountUserId = account?.userId ?? ""
   const accountRole = account?.role ?? "user"
 
@@ -159,8 +160,27 @@ export default function Home() {
       setAuthReady(true)
     })
 
-    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null)
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "TOKEN_REFRESHED") {
+        setAuthReady(true)
+        return
+      }
+
+      if (event === "SIGNED_OUT") {
+        setUser(null)
+        setAuthReady(true)
+        return
+      }
+
+      setUser((current) => {
+        const nextUser = session?.user ?? null
+
+        if (current?.id === nextUser?.id) {
+          return current
+        }
+
+        return nextUser
+      })
       setAuthReady(true)
     })
 
@@ -174,7 +194,7 @@ export default function Home() {
     let active = true
 
     async function loadAccount() {
-      if (!user) {
+      if (!userId) {
         setAccountStatus("idle")
         setAccount(loadLocalAccount())
         return
@@ -184,17 +204,17 @@ export default function Home() {
         setSyncError("")
         setAccountStatus("loading")
         setAccount(null)
-        const remoteAccount = await loadSupabaseAccount(user.id)
+        const remoteAccount = await loadSupabaseAccount(userId)
         if (!active) return
 
-        setAccount(createAccountFromRemote(user.id, remoteAccount))
+        setAccount(createAccountFromRemote(userId, remoteAccount))
         setAccountStatus("ready")
 
         loadServerHistoryProjects()
           .then((serverProjects) => {
             if (!active) return
             setAccount((current) => {
-              if (!current || current.userId !== user.id) return current
+              if (!current || current.userId !== userId) return current
               return {
                 ...current,
                 projects: mergeProjectHistories(serverProjects, current.projects),
@@ -218,15 +238,15 @@ export default function Home() {
     return () => {
       active = false
     }
-  }, [user])
+  }, [userId])
 
   const refreshAccount = async () => {
-    if (!user) return
+    if (!userId) return
 
     try {
       setSyncError("")
-      const remoteAccount = await loadSupabaseAccount(user.id)
-      const refreshedAccount = createAccountFromRemote(user.id, remoteAccount)
+      const remoteAccount = await loadSupabaseAccount(userId)
+      const refreshedAccount = createAccountFromRemote(userId, remoteAccount)
       setAccount((current) => ({
         ...refreshedAccount,
         projects: mergeProjectHistories(current?.projects ?? [], refreshedAccount.projects),
@@ -236,7 +256,7 @@ export default function Home() {
       loadServerHistoryProjects()
         .then((serverProjects) => {
           setAccount((current) => {
-            if (!current || current.userId !== user.id) return current
+            if (!current || current.userId !== userId) return current
             return {
               ...current,
               projects: mergeProjectHistories(serverProjects, current.projects),
@@ -256,7 +276,7 @@ export default function Home() {
   }
 
   const refreshBillingConfig = useCallback(async () => {
-    if (!user || accountStatus !== "ready" || accountUserId !== user.id) {
+    if (!userId || accountStatus !== "ready" || accountUserId !== userId) {
       setBillingReady(false)
       setAdminAccounts([])
       setRedeemCodes([])
@@ -288,14 +308,14 @@ export default function Home() {
       setSyncError(getErrorMessage(error, "加载充值配置失败。"))
       setBillingReady(true)
     }
-  }, [accountRole, accountStatus, accountUserId, user])
+  }, [accountRole, accountStatus, accountUserId, userId])
 
   useEffect(() => {
     refreshBillingConfig()
   }, [refreshBillingConfig])
 
   useEffect(() => {
-    if (!user || !account || accountStatus !== "ready" || account.userId !== user.id) return
+    if (!userId || !account || accountStatus !== "ready" || account.userId !== userId) return
 
     const timer = window.setTimeout(() => {
       saveSupabaseAccount(account).catch((error) => {
@@ -304,12 +324,12 @@ export default function Home() {
     }, 400)
 
     return () => window.clearTimeout(timer)
-  }, [account, accountStatus, user])
+  }, [account, accountStatus, userId])
 
   useEffect(() => {
-    if (user || !account) return
+    if (userId || !account) return
     saveLocalAccount(account)
-  }, [account, user])
+  }, [account, userId])
 
   useEffect(() => {
     if (!account || account.role === "admin" || activeSection !== "admin") return
