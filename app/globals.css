@@ -123,3 +123,51 @@
     @apply bg-background text-foreground;
   }
 }
+
+@layer components {
+  .storm-workspace {
+    color-scheme: dark;
+    background:
+      radial-gradient(circle at 18% 0%, rgb(34 211 238 / 0.12), transparent 28rem),
+      radial-gradient(circle at 86% 12%, rgb(20 184 166 / 0.1), transparent 24rem),
+      linear-gradient(135deg, #020617 0%, #030712 44%, #08111f 100%);
+  }
+
+  .storm-workspace::before {
+    background-image:
+      linear-gradient(rgb(148 163 184 / 0.055) 1px, transparent 1px),
+      linear-gradient(90deg, rgb(148 163 184 / 0.055) 1px, transparent 1px);
+    background-size: 36px 36px;
+    content: "";
+    inset: 0;
+    pointer-events: none;
+    position: fixed;
+  }
+
+  .storm-panel {
+    @apply border border-slate-800/80 bg-slate-950/70 text-slate-100 shadow-[0_1px_0_rgb(255_255_255/0.04)_inset];
+  }
+
+  .storm-panel-muted {
+    @apply border border-slate-800/70 bg-slate-900/55 text-slate-200;
+  }
+
+  .storm-input {
+    @apply border border-slate-800 bg-slate-950/70 text-slate-100 placeholder:text-slate-500 focus:border-cyan-400/70 focus:bg-slate-950 focus:ring-2 focus:ring-cyan-400/15;
+  }
+
+  .storm-focus {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/45 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .storm-workspace *,
+  .storm-workspace *::before,
+  .storm-workspace *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

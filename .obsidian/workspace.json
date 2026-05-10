@@ -70,8 +70,7 @@
               "title": "书签"
             }
           }
-        ],
-        "currentTab": 1
+        ]
       }
     ],
     "direction": "horizontal",
@@ -178,11 +177,20 @@
       "bases:新建数据库": false
     }
   },
-  "active": "f17acf23ff6ebcba",
+  "active": "8ec0b6e57e61c42e",
   "lastOpenFiles": [
+    "lib/safe-fetch-url.ts",
+    "_tmp_14741_60a40dfa2cc89f024fbdb40b84e50b5b",
+    "app/results/[taskId]/page.tsx",
+    "app/results/[taskId]",
+    "app/results",
+    "components/auth-panel.tsx",
+    "app/ui-demo/page.tsx",
+    "app/ui-demo",
+    "app/admin/page.tsx",
+    "app/admin",
+    "app/page.tsx",
     "docs/vercel-usage-metrics.md",
-    "develop.md",
-    "supabase-schema.sql",
-    "docs"
+    "develop.md"
   ]
 }

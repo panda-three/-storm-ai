@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { fetchSafeRemoteResource, parseSafeRemoteUrl } from "@/lib/safe-fetch-url"
 
 const fallbackFilename = "download"
 const maxImageDownloadBytes = 25 * 1024 * 1024
@@ -15,16 +16,16 @@ export async function GET(request: Request) {
 
   let parsedUrl: URL
   try {
-    parsedUrl = new URL(assetUrl)
-  } catch {
-    return NextResponse.json({ ok: false, error: "下载地址无效。" }, { status: 400 })
+    parsedUrl = parseSafeRemoteUrl(assetUrl, { allowHttp: process.env.NODE_ENV !== "production" })
+  } catch (error) {
+    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "下载地址无效。" }, { status: 400 })
   }
 
-  if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-    return NextResponse.json({ ok: false, error: "下载地址协议无效。" }, { status: 400 })
-  }
-
-  const response = await fetch(parsedUrl, { cache: "no-store" })
+  const response = await fetchSafeRemoteResource(
+    parsedUrl,
+    { cache: "no-store" },
+    { allowHttp: process.env.NODE_ENV !== "production" }
+  )
 
   if (!response.ok || !response.body) {
     return NextResponse.json({ ok: false, error: "下载资源获取失败。" }, { status: 502 })

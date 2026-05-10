@@ -80,13 +80,13 @@ export async function POST(request: Request) {
 
     logGenerateImage("input", {
       contentType: body instanceof FormData ? "multipart/form-data" : "application/json",
-      prompt,
+      promptLength: prompt.length,
       model,
       quality,
       ratio,
       imageCount,
       referenceImages: referenceImages.map(toFileLog),
-      userId,
+      userId: maskId(userId),
     })
 
     if (membershipCoversQuality) {
@@ -245,8 +245,7 @@ export async function POST(request: Request) {
       cause: error instanceof Error && error.cause ? describeServerError(error.cause, "") : "",
       jobId,
       message,
-      raw: error,
-      userId,
+      userId: maskId(userId),
     })
 
     if (jobId) {
@@ -394,12 +393,17 @@ function isImageFile(value: FormDataEntryValue): value is File {
 
 function toFileLog(file: File) {
   return {
-    name: file.name,
     type: file.type,
     size: file.size,
   }
 }
 
 function logGenerateImage(label: string, value: unknown) {
+  if (process.env.LOG_GENERATION_DEBUG !== "1") return
   console.log(`[Generate Image] ${label}`, value)
+}
+
+function maskId(value: string) {
+  if (!value) return ""
+  return `${value.slice(0, 6)}...${value.slice(-4)}`
 }

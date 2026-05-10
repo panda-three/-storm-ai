@@ -1,7 +1,8 @@
 "use client"
 
 import { type DragEvent, useEffect, useRef, useState } from "react"
-import type { WorkspaceSection } from "@/app/page"
+import { useRouter } from "next/navigation"
+import type { WorkspaceSection } from "@/lib/workspace-section"
 import type { MembershipTier } from "@/lib/local-store"
 import type { ProjectItem, ProjectStatus, ProjectType } from "@/lib/project-history"
 import type { CreditPackage, CustomerServiceSettings, ModelPricing } from "@/lib/supabase"
@@ -17,9 +18,18 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
   AlertCircle,
   ArrowRight,
+  Box,
   CheckCircle2,
+  ChevronDown,
   Coins,
   Copy,
   Download,
@@ -32,6 +42,7 @@ import {
   Menu,
   Play,
   QrCode,
+  RectangleHorizontal,
   RotateCcw,
   Sparkles,
   Trash2,
@@ -40,10 +51,8 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-type ChatWorkspaceSection = Exclude<WorkspaceSection, "admin">
-
 interface ChatAreaProps {
-  activeSection: ChatWorkspaceSection
+  activeSection: WorkspaceSection
   billingReady: boolean
   creditBalance: number
   creditPackages: CreditPackage[]
@@ -71,19 +80,19 @@ interface ChatAreaProps {
 }
 
 const sectionMeta: Record<
-  ChatWorkspaceSection,
+  WorkspaceSection,
   {
     title: string
     description: string
   }
 > = {
   image: {
-    title: "AI 生图工作台",
-    description: "输入创意描述，选择图片比例与清晰度后生成作品。",
+    title: "季风创绘工作台",
+    description: "图片和视频生成合并输入。",
   },
   video: {
-    title: "AI 视频工作台",
-    description: "规划视频提示词、时长和清晰度，生成短视频内容。",
+    title: "季风创绘工作台",
+    description: "图片和视频生成合并输入。",
   },
   history: {
     title: "历史项目",
@@ -100,14 +109,12 @@ const maxReferenceImageBytes = 10 * 1024 * 1024
 const supportedReferenceImageTypes = ["image/jpeg", "image/png", "image/webp"]
 const imageDefaultRatioOption = "默认"
 const imageCountOptions = ["1", "2", "3", "4"]
-const activeTaskPolls = new Set<string>()
-const taskInitialPollDelayMs = 15000
-const taskEarlyPollIntervalMs = 15000
-const taskMiddlePollIntervalMs = 30000
-const taskLatePollIntervalMs = 60000
-const taskEarlyPollWindowMs = 2 * 60 * 1000
-const taskMiddlePollWindowMs = 5 * 60 * 1000
-const taskMaxPollDurationMs = 20 * 60 * 1000
+const imageCountDropdownOptions = [
+  { label: "1 张", value: "1" },
+  { label: "2 张", value: "2" },
+  { label: "3 张", value: "3" },
+  { label: "4 张", value: "4" },
+]
 
 interface ReferenceImage {
   file: File
@@ -120,10 +127,14 @@ interface ReferenceImage {
 }
 
 function getAssetExtension(url: string, fallback: string) {
-  const pathname = new URL(url, window.location.href).pathname
-  const extension = pathname.split(".").pop()?.toLowerCase()
+  try {
+    const pathname = new URL(url, window.location.href).pathname
+    const extension = pathname.split(".").pop()?.toLowerCase()
 
-  return extension && extension.length <= 5 ? extension : fallback
+    return extension && extension.length <= 5 ? extension : fallback
+  } catch {
+    return fallback
+  }
 }
 
 function downloadAsset(url: string, filename: string) {
@@ -265,6 +276,88 @@ function parseImageCount(value: string) {
   return Number.isInteger(parsed) && parsed >= 1 && parsed <= 4 ? parsed : 1
 }
 
+type DropdownOption = {
+  label: string
+  value: string
+}
+
+function WorkspaceDropdown({
+  className,
+  icon: Icon,
+  label,
+  onChange,
+  options,
+  value,
+}: {
+  className?: string
+  icon: React.ComponentType<{ className?: string }>
+  label: string
+  onChange: (value: string) => void
+  options: DropdownOption[]
+  value: string
+}) {
+  const currentLabel = options.find((option) => option.value === value)?.label ?? label
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          className={cn(
+            "inline-flex h-11 shrink-0 cursor-pointer items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-800 shadow-[0_1px_0_rgba(15,23,42,0.03)] transition-colors hover:border-cyan-200 hover:bg-cyan-50/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/60 disabled:cursor-not-allowed disabled:opacity-50",
+            className
+          )}
+          type="button"
+        >
+          <Icon className="h-4 w-4 shrink-0" />
+          <span className="min-w-0 truncate">{currentLabel}</span>
+          <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="start"
+        className="z-50 min-w-[var(--radix-dropdown-menu-trigger-width)] rounded-2xl border border-slate-200 bg-white p-1 shadow-[0_20px_50px_rgba(15,23,42,0.14)]"
+      >
+        <DropdownMenuRadioGroup onValueChange={onChange} value={value}>
+          {options.map((option) => (
+            <DropdownMenuRadioItem
+              className="cursor-pointer rounded-xl px-3 py-2.5 text-sm text-slate-700 outline-none data-[highlighted]:bg-slate-50 data-[highlighted]:text-slate-950 data-[state=checked]:!bg-cyan-50 data-[state=checked]:!text-slate-950 data-[state=checked]:font-medium"
+              key={option.value}
+              value={option.value}
+            >
+              {option.label}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+function ModeDropdown({
+  mode,
+  onChange,
+}: {
+  mode: "image" | "video"
+  onChange: (mode: "image" | "video") => void
+}) {
+  const isImage = mode === "image"
+  const Icon = isImage ? ImageIcon : Film
+
+  return (
+    <WorkspaceDropdown
+      className="border-cyan-200 bg-cyan-50 text-cyan-700 hover:border-cyan-300 hover:bg-cyan-100/70"
+      icon={Icon}
+      label={isImage ? "图片生成" : "视频生成"}
+      onChange={(value) => onChange(value as "image" | "video")}
+      options={[
+        { label: "图片生成", value: "image" },
+        { label: "视频生成", value: "video" },
+      ]}
+      value={mode}
+    />
+  )
+}
+
 function findModelPricing(
   pricing: ModelPricing[],
   params: {
@@ -308,6 +401,83 @@ function formatMembershipExpiresAt(expiresAt: string | null) {
   })
 }
 
+function ReferenceUploadCard({
+  disabled,
+  isActive,
+  label,
+  onClick,
+}: {
+  disabled?: boolean
+  isActive?: boolean
+  label: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      className={cn(
+        "group grid h-[116px] w-[68px] shrink-0 cursor-pointer place-items-center rounded-md border border-dashed bg-slate-50 text-slate-400 transition-colors hover:border-cyan-200 hover:bg-cyan-50/70 hover:text-cyan-600 disabled:cursor-not-allowed disabled:opacity-50 sm:h-[138px] sm:w-[76px] sm:-rotate-6",
+        isActive ? "border-cyan-300 bg-cyan-50 text-cyan-600" : "border-slate-200"
+      )}
+      disabled={disabled}
+      onClick={onClick}
+      type="button"
+    >
+      <span className="grid justify-items-center gap-2 text-center text-xs">
+        <ImagePlus className="h-5 w-5" />
+        <span className="hidden leading-tight sm:block">{label}</span>
+      </span>
+    </button>
+  )
+}
+
+function UploadColumn({
+  disabled,
+  isActive,
+  isGenerating,
+  label,
+  onClick,
+  onRemove,
+  referenceImages,
+}: {
+  disabled?: boolean
+  isActive?: boolean
+  isGenerating: boolean
+  label: string
+  onClick: () => void
+  onRemove: (id: string) => void
+  referenceImages: ReferenceImage[]
+}) {
+  return (
+    <div className="flex shrink-0 flex-col items-center gap-2">
+      <ReferenceUploadCard disabled={disabled} isActive={isActive} label={label} onClick={onClick} />
+      {referenceImages.length > 0 && (
+        <div className="grid max-h-28 gap-1 overflow-y-auto">
+          {referenceImages.map((image, index) => (
+            <div
+              className="group relative h-10 w-10 overflow-hidden rounded-xl border border-slate-200 bg-slate-100"
+              key={image.id}
+            >
+              <img alt={`参考图 ${index + 1}`} className="h-full w-full object-cover" src={image.previewUrl} />
+              <button
+                aria-label={`移除参考图 ${index + 1}`}
+                className="absolute right-0.5 top-0.5 grid h-4 w-4 cursor-pointer place-items-center rounded-full bg-slate-950/85 text-white opacity-0 transition group-hover:opacity-100 focus:opacity-100"
+                disabled={isGenerating}
+                onClick={() => onRemove(image.id)}
+                type="button"
+              >
+                <X className="h-2.5 w-2.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="hidden max-w-24 text-center text-[11px] leading-4 text-slate-400 sm:block">
+        {referenceImages.length}/{maxReferenceImages} 张
+      </div>
+    </div>
+  )
+}
+
 function PricingNotice({
   estimatedCredits,
   imageCount,
@@ -323,8 +493,8 @@ function PricingNotice({
     <div
       className={
         estimatedCredits === null
-          ? "mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800"
-          : "mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800"
+          ? "mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800"
+          : "mt-4 rounded-2xl border border-cyan-200 bg-cyan-50 px-3 py-2 text-sm text-cyan-700"
       }
     >
       {estimatedCredits === null
@@ -338,69 +508,10 @@ function PricingNotice({
 
 function PricingLoadingNotice() {
   return (
-    <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">
+    <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">
       正在加载价格配置...
     </div>
   )
-}
-
-async function pollTask({
-  accessToken,
-  initialDelayMs = taskInitialPollDelayMs,
-  onUpdate,
-  taskId,
-}: {
-  accessToken: string
-  initialDelayMs?: number
-  onUpdate: (task: TaskStatusResponse) => void
-  taskId: string
-}) {
-  if (activeTaskPolls.has(taskId)) return
-
-  activeTaskPolls.add(taskId)
-
-  try {
-    const startedAt = Date.now()
-    let nextDelay = initialDelayMs
-
-    while (Date.now() - startedAt < taskMaxPollDurationMs) {
-      await new Promise((resolve) => window.setTimeout(resolve, nextDelay))
-
-      const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      })
-      const task = (await response.json()) as TaskStatusResponse
-
-      if (!response.ok || !task.ok) {
-        if (task.retryable || response.status === 429) {
-          nextDelay = Math.min(120000, nextDelay * 2)
-          continue
-        }
-
-        throw new Error(task.error ?? "任务状态查询失败。")
-      }
-
-      onUpdate(task)
-
-      if (task.status === "completed" || task.status === "failed" || task.status === "partial_completed") {
-        return
-      }
-
-      nextDelay = getTaskPollDelay(Date.now() - startedAt)
-    }
-
-    throw new TaskPollingTimeoutError()
-  } finally {
-    activeTaskPolls.delete(taskId)
-  }
-}
-
-function getTaskPollDelay(elapsedMs: number) {
-  if (elapsedMs < taskEarlyPollWindowMs) return taskEarlyPollIntervalMs
-  if (elapsedMs < taskMiddlePollWindowMs) return taskMiddlePollIntervalMs
-  return taskLatePollIntervalMs
 }
 
 interface ImageResult {
@@ -449,14 +560,7 @@ interface TaskStatusResponse {
   taskError?: string
 }
 
-class TaskPollingTimeoutError extends Error {
-  constructor() {
-    super("任务已转入后台继续生成，可稍后在历史项目中查看。")
-    this.name = "TaskPollingTimeoutError"
-  }
-}
-
-function isLegacyUpstreamTaskId(taskId: string | undefined) {
+export function isLegacyUpstreamTaskId(taskId: string | undefined) {
   return Boolean(taskId?.startsWith("task_"))
 }
 
@@ -572,6 +676,7 @@ export function ChatArea({
   userId,
 }: ChatAreaProps) {
   const meta = sectionMeta[activeSection]
+  const router = useRouter()
 
   useEffect(() => {
     const pendingProjects = projects.filter((project) => project.status === "生成中" && project.taskId)
@@ -599,10 +704,6 @@ export function ChatArea({
 
       if (isLegacyUpstreamTaskId(taskId)) {
         stopTaskProjects("旧任务没有本地生成记录，已停止自动查询。")
-        return
-      }
-
-      if (activeTaskPolls.has(taskId)) {
         return
       }
 
@@ -716,32 +817,36 @@ export function ChatArea({
     })
   }
 
+  const openResultPage = (taskId: string) => {
+    router.push(`/results/${encodeURIComponent(taskId)}`)
+  }
+
   return (
-    <main className="flex min-w-0 flex-1 flex-col">
-      <header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4 sm:px-6">
+    <main className="relative z-10 flex min-w-0 flex-1 flex-col">
+      <header className="flex h-16 items-center justify-between px-4 sm:px-8">
         <div className="flex min-w-0 items-center gap-3">
           {!sidebarOpen && (
             <Button
               aria-label="展开侧边栏"
               variant="ghost"
               size="icon"
-              className="h-8 w-8 text-slate-500 hover:text-slate-950"
+              className="h-10 w-10 rounded-2xl border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-950"
               onClick={onToggleSidebar}
             >
               <Menu className="h-5 w-5" />
             </Button>
           )}
           <div className="min-w-0">
-            <h1 className="truncate text-lg font-semibold text-slate-950">{meta.title}</h1>
+            <h1 className="truncate text-sm font-semibold text-slate-950 sm:text-base">{meta.title}</h1>
             <p className="hidden truncate text-sm text-slate-500 sm:block">{meta.description}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Badge className="hidden border-indigo-200 bg-indigo-50 text-indigo-700 sm:inline-flex" variant="outline">
+          <Badge className="hidden rounded-full border-cyan-200 bg-cyan-50 text-cyan-700 sm:inline-flex" variant="outline">
             余额 {creditBalance.toLocaleString()} 点
           </Badge>
           <Button
-            className="bg-emerald-600 text-white hover:bg-emerald-700"
+            className="rounded-2xl bg-slate-950 text-white hover:bg-slate-800"
             size="sm"
             onClick={() => onSectionChange("credits")}
           >
@@ -751,8 +856,8 @@ export function ChatArea({
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6 lg:px-8">
-        <div className="mx-auto grid max-w-6xl gap-5">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-8 pt-4 sm:px-8">
+        <div className="mx-auto grid max-w-[1460px] gap-5">
           {activeSection === "image" && (
             <ImageWorkspace
               billingReady={billingReady}
@@ -763,17 +868,17 @@ export function ChatArea({
               membershipTier={membershipTier}
               modelPricing={modelPricing}
               onAccountRefresh={onAccountRefresh}
-              onProjectUpdated={onProjectUpdate}
+              onResultOpen={openResultPage}
               onSectionChange={onSectionChange}
             />
           )}
           {activeSection === "video" && (
             <VideoWorkspace
               billingReady={billingReady}
-              onProjectUpdated={onProjectUpdate}
               creditBalance={creditBalance}
               modelPricing={modelPricing}
               onAccountRefresh={onAccountRefresh}
+              onResultOpen={openResultPage}
               onSectionChange={onSectionChange}
               onVideoGenerated={handleVideoGenerated}
             />
@@ -814,7 +919,7 @@ function ImageWorkspace({
   modelPricing,
   onAccountRefresh,
   onImageGenerated,
-  onProjectUpdated,
+  onResultOpen,
   onSectionChange,
 }: {
   billingReady: boolean
@@ -825,7 +930,7 @@ function ImageWorkspace({
   modelPricing: ModelPricing[]
   onAccountRefresh: () => Promise<void>
   onImageGenerated: (result: ImageResult) => void
-  onProjectUpdated: (item: ProjectItem) => void
+  onResultOpen: (taskId: string) => void
   onSectionChange: (section: WorkspaceSection) => void
 }) {
   const [prompt, setPrompt] = useState("")
@@ -833,12 +938,11 @@ function ImageWorkspace({
   const imageSettings = imageModelSettings[model]
   const [quality, setQuality] = useState(imageSettings.qualities[1])
   const [ratio, setRatio] = useState(imageSettings.ratios[0])
-  const [imageCount, setImageCount] = useState(imageCountOptions[0])
+  const [imageCount, setImageCount] = useState(imageCountOptions[2])
   const parsedImageCount = parseImageCount(imageCount)
   const ratioOptions = getImageRatiosForSelection(model, quality)
   const [isGenerating, setIsGenerating] = useState(false)
   const [error, setError] = useState("")
-  const [result, setResult] = useState<ImageResult | null>(null)
   const [referenceImages, setReferenceImages] = useState<ReferenceImage[]>([])
   const [isReferenceDragActive, setIsReferenceDragActive] = useState(false)
   const referenceInputRef = useRef<HTMLInputElement>(null)
@@ -974,7 +1078,6 @@ function ImageWorkspace({
 
     if (!trimmedPrompt) {
       setError("请先输入生图提示词。")
-      setResult(null)
       window.requestAnimationFrame(() => promptRef.current?.focus())
       return
     }
@@ -996,7 +1099,6 @@ function ImageWorkspace({
 
     setError("")
     setIsGenerating(true)
-    setResult(null)
 
     try {
       const formData = new FormData()
@@ -1028,8 +1130,6 @@ function ImageWorkspace({
         throw new Error(getErrorMessage(data, "生图任务提交失败。"))
       }
 
-      await onAccountRefresh()
-
       const imageUrls = Array.isArray(data.imageUrls) ? data.imageUrls.filter((url: unknown) => typeof url === "string") : []
       const isCompleted = (data.status === "completed" || data.status === "partial_completed") && imageUrls.length > 0
       const initialStatus: ProjectStatus =
@@ -1048,67 +1148,16 @@ function ImageWorkspace({
         imageCount: parsedImageCount,
         imageUrl: imageUrls[0] ?? "",
         imageUrls,
-        palette: "from-indigo-500 via-sky-400 to-emerald-300",
+        palette: "from-cyan-500 via-sky-400 to-indigo-300",
         status: initialStatus,
         taskId: data.taskId,
         progress: isCompleted ? 100 : 0,
         taskError: typeof data.taskError === "string" ? data.taskError : "",
       }
 
-      setResult(generatedResult)
       onImageGenerated(generatedResult)
-
-      if (isCompleted) {
-        return
-      }
-
-      pollTask({
-        accessToken,
-        taskId: data.taskId,
-        onUpdate: (task) => {
-          const resolved = resolveImageTaskProject(task, generatedResult.imageUrl)
-          const resolvedImageUrls =
-            resolved.status === "失败"
-              ? []
-              : resolved.imageUrls.length > 0
-                ? resolved.imageUrls
-                : generatedResult.imageUrls
-          const nextResult: ImageResult = {
-            ...generatedResult,
-            status: resolved.status,
-            progress: task.progress ?? generatedResult.progress,
-            imageUrl: resolved.previewUrl,
-            imageUrls: resolvedImageUrls,
-          }
-
-          setResult(nextResult)
-          onProjectUpdated({
-            id: nextResult.id,
-            title: nextResult.prompt.slice(0, 22) || "未命名生图任务",
-            type: "生图",
-            status: nextResult.status,
-            time: nextResult.createdAt,
-            model: nextResult.model,
-            palette: nextResult.palette,
-            prompt: nextResult.prompt,
-            imageUrls: nextResult.imageUrls,
-            previewLabel: `${nextResult.quality} · ${nextResult.ratio} · ${nextResult.imageCount} 张`,
-            previewUrl: nextResult.imageUrl,
-            taskId: nextResult.taskId,
-            taskError: resolved.taskError,
-          })
-
-          if (resolved.status === "失败" || resolved.status === "已完成" || resolved.status === "部分完成") {
-            onAccountRefresh().catch(() => undefined)
-          }
-        },
-      }).catch((error) => {
-        setError(
-          error instanceof TaskPollingTimeoutError
-            ? error.message
-            : getErrorMessage(error, "任务状态查询失败。")
-        )
-      })
+      onResultOpen(data.taskId)
+      onAccountRefresh().catch(() => undefined)
     } catch (error) {
       await onAccountRefresh().catch(() => undefined)
       setError(getErrorMessage(error, "生图任务提交失败。"))
@@ -1119,42 +1168,30 @@ function ImageWorkspace({
 
   return (
     <>
-      <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
-        <div className="rounded-lg border border-slate-200 bg-white p-5">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-center gap-2">
-              <ImageIcon className="h-5 w-5 text-indigo-600" />
-              <h2 className="text-base font-semibold">生图任务</h2>
-            </div>
-            <Badge className="border-indigo-200 bg-indigo-50 text-indigo-700" variant="outline">
-              服务端提交
-            </Badge>
+      <section className="grid gap-5">
+        <div className="mx-auto w-full max-w-[1120px]">
+          <div className="mb-8 text-center">
+            <h1 className="mt-12 text-2xl font-semibold tracking-normal text-slate-950 sm:text-3xl">
+              开启你的 <span className="text-cyan-500">图片生成</span> 即刻造梦！
+            </h1>
+            <p className="mx-auto mt-3 max-w-2xl text-sm leading-6 text-slate-500">
+              上传参考图，输入设计描述，选择当前项目已有参数后提交生成。
+            </p>
           </div>
-          <textarea
-            ref={promptRef}
-            value={prompt}
-            aria-invalid={error === "请先输入生图提示词。"}
-            onChange={(event) => handlePromptChange(event.target.value)}
-            className={`mt-4 min-h-36 w-full resize-none rounded-lg border bg-slate-50 p-4 text-sm outline-none transition focus:bg-white focus:ring-2 ${
-              error === "请先输入生图提示词。"
-                ? "border-rose-300 focus:border-rose-300 focus:ring-rose-100"
-                : "border-slate-200 focus:border-indigo-300 focus:ring-indigo-100"
-            }`}
-            placeholder="描述你想生成的画面，例如：未来感 AI 工作室，玻璃墙面，柔和灯光，产品级渲染..."
-          />
+
           <div
             className={cn(
-              "mt-4 rounded-lg border border-dashed p-3 transition",
+              "mt-4 rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_18px_50px_rgba(15,23,42,0.08)] transition sm:p-6",
               isReferenceDragActive
-                ? "border-indigo-400 bg-indigo-50 ring-2 ring-indigo-100"
-                : "border-slate-200 bg-slate-50"
+                ? "border-cyan-300 ring-2 ring-cyan-200"
+                : "border-slate-200"
             )}
             onDragEnter={handleReferenceDragEnter}
             onDragLeave={handleReferenceDragLeave}
             onDragOver={handleReferenceDragOver}
             onDrop={handleReferenceDrop}
           >
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex min-h-[178px] gap-5">
               <input
                 ref={referenceInputRef}
                 accept="image/jpeg,image/png,image/webp"
@@ -1163,59 +1200,92 @@ function ImageWorkspace({
                 onChange={(event) => handleReferenceImageChange(event.target.files)}
                 type="file"
               />
-              <Button
-                aria-label="添加参考图"
-                className="h-12 w-12 rounded-lg border-slate-200 bg-white p-0 text-slate-600 hover:bg-slate-100"
+              <UploadColumn
                 disabled={isGenerating || referenceImages.length >= maxReferenceImages}
+                isActive={isReferenceDragActive}
+                label="添加参考图"
                 onClick={() => referenceInputRef.current?.click()}
-                type="button"
-                variant="outline"
-              >
-                <ImagePlus className="h-5 w-5" />
-              </Button>
-              {referenceImages.map((image, index) => (
-                <div
-                  className="group relative h-12 w-12 overflow-hidden rounded-lg border border-slate-200 bg-white"
-                  key={image.id}
-                >
-                  <img alt={`参考图 ${index + 1}`} className="h-full w-full object-cover" src={image.previewUrl} />
+                referenceImages={referenceImages}
+                onRemove={handleReferenceImageRemove}
+                isGenerating={isGenerating}
+              />
+
+              <div className="flex min-w-0 flex-1 flex-col">
+                <textarea
+                  ref={promptRef}
+                  value={prompt}
+                  aria-invalid={error === "请先输入生图提示词。"}
+                  onChange={(event) => handlePromptChange(event.target.value)}
+                  className={cn(
+                    "min-h-[116px] w-full resize-none bg-transparent text-xl leading-8 outline-none placeholder:text-slate-400 sm:text-[22px]",
+                    error === "请先输入生图提示词。" ? "text-rose-700" : "text-slate-800"
+                  )}
+                  placeholder="描述你想生成的图片，例如：现代极简客餐厅，浅木色地板，隐藏灯带，适合小户型。"
+                />
+
+                <div className="mt-auto flex flex-col gap-3 border-t border-slate-100 pt-4 xl:flex-row xl:items-center xl:justify-between">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <ModeDropdown mode="image" onChange={(nextMode) => onSectionChange(nextMode)} />
+                    <WorkspaceDropdown
+                      icon={Box}
+                      label="生图模型"
+                      onChange={(value) => {
+                        const settings = imageModelSettings[value]
+                        setModel(value)
+                        setQuality(settings.qualities[1] ?? settings.qualities[0])
+                        setRatio(settings.ratios[0])
+                      }}
+                      options={imageModelOptions.map((option) => ({
+                        label: getOptionLabel(option),
+                        value: option,
+                      }))}
+                      value={model}
+                    />
+                    <WorkspaceDropdown
+                      icon={Sparkles}
+                      label="图片清晰度"
+                      onChange={setQuality}
+                      options={imageSettings.qualities.map((option) => ({
+                        label: option,
+                        value: option,
+                      }))}
+                      value={quality}
+                    />
+                    <WorkspaceDropdown
+                      icon={RectangleHorizontal}
+                      label="图片比例"
+                      onChange={setRatio}
+                      options={ratioOptions.map((option) => ({
+                        label: getOptionLabel(option),
+                        value: option,
+                      }))}
+                      value={ratio}
+                    />
+                    <WorkspaceDropdown
+                      icon={ImageIcon}
+                      label="生成张数"
+                      onChange={setImageCount}
+                      options={imageCountDropdownOptions}
+                      value={imageCount}
+                    />
+                  </div>
+
                   <button
-                    aria-label={`移除参考图 ${index + 1}`}
-                    className="absolute right-1 top-1 grid h-5 w-5 place-items-center rounded-full bg-slate-950/70 text-white opacity-0 transition group-hover:opacity-100 focus:opacity-100"
-                    disabled={isGenerating}
-                    onClick={() => handleReferenceImageRemove(image.id)}
+                    aria-label={isGenerating ? "生成中" : "生成图片"}
+                    className="inline-flex h-12 min-w-12 cursor-pointer items-center justify-center gap-2 rounded-full bg-slate-950 px-4 text-sm font-semibold text-white transition-colors hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/60 disabled:cursor-not-allowed disabled:opacity-50 sm:px-5"
+                    disabled={isGenerating || !billingReady || !currentPricing}
+                    onClick={handleGenerate}
                     type="button"
                   >
-                    <X className="h-3 w-3" />
+                    {isGenerating ? <Loader2 className="h-5 w-5 animate-spin" /> : <ArrowRight className="h-5 w-5" />}
+                    <span className="hidden sm:inline">{isGenerating ? "生成中..." : "生成图片"}</span>
                   </button>
-                </div>
-              ))}
-              <div className="min-w-48 text-xs text-slate-500">
-                <div className="font-medium text-slate-700">参考图</div>
-                <div>
-                  已添加 {referenceImages.length}/{maxReferenceImages} 张 · 可点击或拖拽上传 · JPG/PNG/WebP · 单张 10MB 内
                 </div>
               </div>
             </div>
           </div>
-          <div className="mt-4 grid gap-4 lg:grid-cols-4">
-            <OptionGroup
-              label="生图模型"
-              onChange={(value) => {
-                const settings = imageModelSettings[value]
-                setModel(value)
-                setQuality(settings.qualities[1])
-                setRatio(settings.ratios[0])
-              }}
-              options={imageModelOptions}
-              selected={model}
-            />
-            <OptionGroup label="图片清晰度" onChange={setQuality} options={imageSettings.qualities} selected={quality} />
-            <OptionGroup label="图片比例" onChange={setRatio} options={ratioOptions} selected={ratio} />
-            <OptionGroup label="生成张数" onChange={setImageCount} options={imageCountOptions} selected={imageCount} />
-          </div>
           {error && (
-            <div className="mt-4 flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+            <div className="mt-4 flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
               <AlertCircle className="h-4 w-4" />
               {error}
             </div>
@@ -1230,29 +1300,13 @@ function ImageWorkspace({
             <PricingLoadingNotice />
           )}
           <div className="mt-5 flex flex-col gap-3 sm:flex-row">
-            <Button
-              className="bg-indigo-600 text-white hover:bg-indigo-700"
-              disabled={isGenerating || !billingReady || !currentPricing}
-              onClick={handleGenerate}
-            >
-              {isGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-              {isGenerating ? "生成中..." : "开始生图"}
-            </Button>
-            <Button variant="outline" onClick={() => onSectionChange("history")}>
+            <Button className="rounded-2xl border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-slate-950" variant="outline" onClick={() => onSectionChange("history")}>
               查看历史项目
               <ArrowRight className="h-4 w-4" />
             </Button>
           </div>
         </div>
-
-        <ImageResultPanel
-          imageCount={parsedImageCount}
-          isGenerating={isGenerating}
-          onRegenerate={handleGenerate}
-          result={result}
-        />
       </section>
-      <QuickEntryGrid onSectionChange={onSectionChange} />
     </>
   )
 }
@@ -1262,7 +1316,7 @@ function VideoWorkspace({
   creditBalance,
   modelPricing,
   onAccountRefresh,
-  onProjectUpdated,
+  onResultOpen,
   onVideoGenerated,
   onSectionChange,
 }: {
@@ -1270,7 +1324,7 @@ function VideoWorkspace({
   creditBalance: number
   modelPricing: ModelPricing[]
   onAccountRefresh: () => Promise<void>
-  onProjectUpdated: (item: ProjectItem) => void
+  onResultOpen: (taskId: string) => void
   onVideoGenerated: (result: VideoResult) => void
   onSectionChange: (section: WorkspaceSection) => void
 }) {
@@ -1282,7 +1336,6 @@ function VideoWorkspace({
   const [aspectRatio, setAspectRatio] = useState(modelSettings.aspectRatios[0])
   const [isGenerating, setIsGenerating] = useState(false)
   const [error, setError] = useState("")
-  const [result, setResult] = useState<VideoResult | null>(null)
   const [referenceImages, setReferenceImages] = useState<ReferenceImage[]>([])
   const [isReferenceDragActive, setIsReferenceDragActive] = useState(false)
   const referenceInputRef = useRef<HTMLInputElement>(null)
@@ -1424,7 +1477,6 @@ function VideoWorkspace({
 
     if (!trimmedPrompt) {
       setError("请先输入视频提示词。")
-      setResult(null)
       window.requestAnimationFrame(() => promptRef.current?.focus())
       return
     }
@@ -1446,7 +1498,6 @@ function VideoWorkspace({
 
     setError("")
     setIsGenerating(true)
-    setResult(null)
 
     try {
       const formData = new FormData()
@@ -1475,8 +1526,6 @@ function VideoWorkspace({
         throw new Error(getErrorMessage(data, "视频任务提交失败。"))
       }
 
-      await onAccountRefresh()
-
       const generatedResult: VideoResult = {
         id: `video-${Date.now()}`,
         prompt: trimmedPrompt,
@@ -1494,48 +1543,9 @@ function VideoWorkspace({
         videoUrl: "",
       }
 
-      setResult(generatedResult)
       onVideoGenerated(generatedResult)
-      pollTask({
-        accessToken,
-        taskId: data.taskId,
-        onUpdate: (task) => {
-          const resolved = resolveVideoTaskProject(task, generatedResult.videoUrl)
-          const nextResult: VideoResult = {
-            ...generatedResult,
-            status: resolved.status,
-            progress: task.progress ?? generatedResult.progress,
-            taskError: resolved.taskError,
-            videoUrl: resolved.previewUrl,
-          }
-
-          setResult(nextResult)
-          onProjectUpdated({
-            id: nextResult.id,
-            title: nextResult.prompt.slice(0, 22) || "未命名视频任务",
-            type: "视频",
-            status: nextResult.status,
-            time: nextResult.createdAt,
-            model: nextResult.model,
-            palette: nextResult.palette,
-            prompt: nextResult.prompt,
-            previewLabel: `${nextResult.duration} · ${nextResult.quality} · ${nextResult.aspectRatio}`,
-            previewUrl: nextResult.videoUrl,
-            taskId: nextResult.taskId,
-            taskError: nextResult.taskError,
-          })
-
-          if (resolved.status === "失败" || resolved.status === "已完成") {
-            onAccountRefresh().catch(() => undefined)
-          }
-        },
-      }).catch((error) => {
-        setError(
-          error instanceof TaskPollingTimeoutError
-            ? error.message
-            : getErrorMessage(error, "任务状态查询失败。")
-        )
-      })
+      onResultOpen(data.taskId)
+      onAccountRefresh().catch(() => undefined)
     } catch (error) {
       await onAccountRefresh().catch(() => undefined)
       setError(getErrorMessage(error, "视频任务提交失败。"))
@@ -1546,42 +1556,30 @@ function VideoWorkspace({
 
   return (
     <>
-      <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
-        <div className="rounded-lg border border-slate-200 bg-white p-5">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-center gap-2">
-              <Film className="h-5 w-5 text-indigo-600" />
-              <h2 className="text-base font-semibold">视频任务</h2>
-            </div>
-            <Badge className="border-indigo-200 bg-indigo-50 text-indigo-700" variant="outline">
-              服务端提交
-            </Badge>
+      <section className="grid gap-5">
+        <div className="mx-auto w-full max-w-[1120px]">
+          <div className="mb-8 text-center">
+            <h1 className="mt-12 text-2xl font-semibold tracking-normal text-slate-950 sm:text-3xl">
+              开启你的 <span className="text-cyan-500">视频生成</span> 即刻造梦！
+            </h1>
+            <p className="mx-auto mt-3 max-w-2xl text-sm leading-6 text-slate-500">
+              切换为视频生成后，保留模型、比例、时长和清晰度这些当前项目已有参数。
+            </p>
           </div>
-          <textarea
-            ref={promptRef}
-            value={prompt}
-            aria-invalid={error === "请先输入视频提示词。"}
-            onChange={(event) => handlePromptChange(event.target.value)}
-            className={`mt-4 min-h-36 w-full resize-none rounded-lg border bg-slate-50 p-4 text-sm outline-none transition focus:bg-white focus:ring-2 ${
-              error === "请先输入视频提示词。"
-                ? "border-rose-300 focus:border-rose-300 focus:ring-rose-100"
-                : "border-slate-200 focus:border-indigo-300 focus:ring-indigo-100"
-            }`}
-            placeholder="描述你想生成的视频，例如：科技产品在黑色展台缓慢旋转，镜头推进，背景有流动光线..."
-          />
+
           <div
             className={cn(
-              "mt-4 rounded-lg border border-dashed p-3 transition",
+              "mt-4 rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_18px_50px_rgba(15,23,42,0.08)] transition sm:p-6",
               isReferenceDragActive
-                ? "border-indigo-400 bg-indigo-50 ring-2 ring-indigo-100"
-                : "border-slate-200 bg-slate-50"
+                ? "border-cyan-300 ring-2 ring-cyan-200"
+                : "border-slate-200"
             )}
             onDragEnter={handleReferenceDragEnter}
             onDragLeave={handleReferenceDragLeave}
             onDragOver={handleReferenceDragOver}
             onDrop={handleReferenceDrop}
           >
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex min-h-[178px] gap-5">
               <input
                 ref={referenceInputRef}
                 accept="image/jpeg,image/png,image/webp"
@@ -1590,84 +1588,109 @@ function VideoWorkspace({
                 onChange={(event) => handleReferenceImageChange(event.target.files)}
                 type="file"
               />
-              <Button
-                aria-label="添加参考图"
-                className="h-16 w-16 rounded-lg border-dashed border-slate-300 bg-white p-0 text-slate-500 hover:border-indigo-300 hover:bg-indigo-50"
+              <UploadColumn
                 disabled={isGenerating || referenceImages.length >= maxReferenceImages}
+                isActive={isReferenceDragActive}
+                label="添加参考图"
                 onClick={() => referenceInputRef.current?.click()}
-                type="button"
-                variant="outline"
-              >
-                <ImagePlus className="h-6 w-6" />
-              </Button>
-              {referenceImages.map((image, index) => (
-                <div
-                  className="group relative h-16 w-16 overflow-hidden rounded-lg border border-slate-200 bg-white"
-                  key={image.id}
-                >
-                  <img alt={`参考图 ${index + 1}`} className="h-full w-full object-cover" src={image.previewUrl} />
+                referenceImages={referenceImages}
+                onRemove={handleReferenceImageRemove}
+                isGenerating={isGenerating}
+              />
+
+              <div className="flex min-w-0 flex-1 flex-col">
+                <textarea
+                  ref={promptRef}
+                  value={prompt}
+                  aria-invalid={error === "请先输入视频提示词。"}
+                  onChange={(event) => handlePromptChange(event.target.value)}
+                  className={cn(
+                    "min-h-[116px] w-full resize-none bg-transparent text-xl leading-8 outline-none placeholder:text-slate-400 sm:text-[22px]",
+                    error === "请先输入视频提示词。" ? "text-rose-700" : "text-slate-800"
+                  )}
+                  placeholder="描述你想生成的视频，例如：从客厅入口推进到餐厅，镜头平稳，展示灯光和材质。"
+                />
+
+                <div className="mt-auto flex flex-col gap-3 border-t border-slate-100 pt-4 xl:flex-row xl:items-center xl:justify-between">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <ModeDropdown mode="video" onChange={(nextMode) => onSectionChange(nextMode)} />
+                    <WorkspaceDropdown
+                      icon={Box}
+                      label="视频模型"
+                      onChange={(value) => {
+                        const settings = videoModelSettings[value]
+                        setModel(value)
+                        setDuration(settings.durations[0])
+                        setQuality(settings.qualities[0])
+                        setAspectRatio(settings.aspectRatios[0])
+                      }}
+                      options={videoModelOptions.map((option) => ({
+                        label: getOptionLabel(option),
+                        value: option,
+                      }))}
+                      value={model}
+                    />
+                    <WorkspaceDropdown
+                      icon={Film}
+                      label="视频时长"
+                      onChange={setDuration}
+                      options={modelSettings.durations.map((option) => ({
+                        label: option,
+                        value: option,
+                      }))}
+                      value={duration}
+                    />
+                    <WorkspaceDropdown
+                      icon={RectangleHorizontal}
+                      label="视频比例"
+                      onChange={setAspectRatio}
+                      options={modelSettings.aspectRatios.map((option) => ({
+                        label: option,
+                        value: option,
+                      }))}
+                      value={aspectRatio}
+                    />
+                    <WorkspaceDropdown
+                      icon={Sparkles}
+                      label="视频清晰度"
+                      onChange={setQuality}
+                      options={modelSettings.qualities.map((option) => ({
+                        label: option,
+                        value: option,
+                      }))}
+                      value={quality}
+                    />
+                  </div>
+
                   <button
-                    aria-label={`移除参考图 ${index + 1}`}
-                    className="absolute right-1 top-1 grid h-5 w-5 place-items-center rounded-full bg-slate-950/70 text-white opacity-0 transition group-hover:opacity-100 focus:opacity-100"
-                    disabled={isGenerating}
-                    onClick={() => handleReferenceImageRemove(image.id)}
+                    aria-label={isGenerating ? "生成中" : "生成视频"}
+                    className="inline-flex h-12 min-w-12 cursor-pointer items-center justify-center gap-2 rounded-full bg-slate-950 px-4 text-sm font-semibold text-white transition-colors hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/60 disabled:cursor-not-allowed disabled:opacity-50 sm:px-5"
+                    disabled={isGenerating || !billingReady || !currentPricing}
+                    onClick={handleGenerate}
                     type="button"
                   >
-                    <X className="h-3 w-3" />
+                    {isGenerating ? <Loader2 className="h-5 w-5 animate-spin" /> : <ArrowRight className="h-5 w-5" />}
+                    <span className="hidden sm:inline">{isGenerating ? "生成中..." : "生成视频"}</span>
                   </button>
-                </div>
-              ))}
-              <div className="min-w-48 text-xs text-slate-500">
-                <div className="font-medium text-slate-700">参考图</div>
-                <div>
-                  已添加 {referenceImages.length}/{maxReferenceImages} 张 · 可点击或拖拽上传 · JPG/PNG/WebP · 单张 10MB 内
                 </div>
               </div>
             </div>
           </div>
-          <div className="mt-4 grid gap-4 lg:grid-cols-3">
-            <OptionGroup
-              label="视频模型"
-              onChange={(value) => {
-                const settings = videoModelSettings[value]
-                setModel(value)
-                setDuration(settings.durations[0])
-                setQuality(settings.qualities[0])
-                setAspectRatio(settings.aspectRatios[0])
-              }}
-              options={videoModelOptions}
-              selected={model}
-            />
-            <OptionGroup label="视频时长" onChange={setDuration} options={modelSettings.durations} selected={duration} />
-            <OptionGroup label="视频比例" onChange={setAspectRatio} options={modelSettings.aspectRatios} selected={aspectRatio} />
-            <OptionGroup label="视频清晰度" onChange={setQuality} options={modelSettings.qualities} selected={quality} />
-          </div>
           {error && (
-            <div className="mt-4 flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+            <div className="mt-4 flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
               <AlertCircle className="h-4 w-4" />
               {error}
             </div>
           )}
           {billingReady ? <PricingNotice estimatedCredits={estimatedCredits} /> : <PricingLoadingNotice />}
           <div className="mt-5 flex flex-col gap-3 sm:flex-row">
-            <Button
-              className="bg-indigo-600 text-white hover:bg-indigo-700"
-              disabled={isGenerating || !billingReady || !currentPricing}
-              onClick={handleGenerate}
-            >
-              {isGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-              {isGenerating ? "生成中..." : "开始生成视频"}
-            </Button>
-            <Button variant="outline" onClick={() => onSectionChange("history")}>
+            <Button className="rounded-2xl border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-slate-950" variant="outline" onClick={() => onSectionChange("history")}>
               查看历史项目
               <ArrowRight className="h-4 w-4" />
             </Button>
           </div>
         </div>
-
-        <VideoResultPanel isGenerating={isGenerating} onRegenerate={handleGenerate} result={result} />
       </section>
-      <QuickEntryGrid onSectionChange={onSectionChange} />
     </>
   )
 }
@@ -1698,12 +1721,12 @@ function HistoryWorkspace({
 
   return (
     <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
-      <div className="rounded-lg border border-slate-200 bg-white p-5">
+      <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-[0_14px_38px_rgba(15,23,42,0.06)]">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <div className="flex items-center gap-2">
-              <History className="h-5 w-5 text-indigo-600" />
-              <h2 className="text-base font-semibold">历史项目</h2>
+              <History className="h-5 w-5 text-cyan-600" />
+              <h2 className="text-base font-semibold text-slate-950">历史项目</h2>
             </div>
             <p className="mt-1 text-sm text-slate-500">统一查看本次会话中的生图和视频生成记录。</p>
           </div>
@@ -1716,6 +1739,11 @@ function HistoryWorkspace({
                   setSelectedId("")
                 }}
                 size="sm"
+                className={
+                  filter === item
+                    ? "bg-slate-950 text-white hover:bg-slate-800"
+                    : "bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-950"
+                }
                 variant={filter === item ? "default" : "outline"}
               >
                 {item}
@@ -1726,9 +1754,9 @@ function HistoryWorkspace({
 
         <div className="mt-5 grid gap-3">
           {filteredItems.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-8 text-center">
+            <div className="rounded-lg border border-dashed bg-slate-50 p-8 text-center">
               <History className="mx-auto h-8 w-8 text-slate-400" />
-              <div className="mt-3 text-sm font-medium text-slate-700">暂无历史项目</div>
+              <div className="mt-3 text-sm font-medium text-slate-600">暂无历史项目</div>
               <div className="mt-1 text-xs text-slate-500">生成图片或视频后会出现在这里。</div>
             </div>
           ) : (
@@ -1736,8 +1764,8 @@ function HistoryWorkspace({
               <button
                 className={
                   selectedItem?.id === item.id
-                    ? "cursor-pointer rounded-lg border border-indigo-300 bg-indigo-50 p-4 text-left"
-                    : "cursor-pointer rounded-lg border border-slate-200 bg-white p-4 text-left transition hover:border-indigo-200 hover:bg-slate-50"
+                    ? "cursor-pointer rounded-lg border border-cyan-200 bg-cyan-50 p-4 text-left text-slate-950"
+                    : "cursor-pointer rounded-lg border border-slate-200 bg-white p-4 text-left text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
                 }
                 key={item.id}
                 onClick={() => setSelectedId(item.id)}
@@ -1747,7 +1775,7 @@ function HistoryWorkspace({
                   <div className="flex min-w-0 items-center gap-3">
                     <ProjectPreviewThumb item={item} />
                     <div className="min-w-0">
-                      <div className="truncate font-medium">{item.title}</div>
+                      <div className="truncate font-medium text-slate-950">{item.title}</div>
                       <div className="mt-1 text-sm text-slate-500">
                         {item.type} · {item.time}
                         {item.previewLabel ? ` · ${item.previewLabel}` : ""}
@@ -1770,19 +1798,19 @@ function HistoryWorkspace({
 
 function ProjectPreviewThumb({ item }: { item: ProjectItem }) {
   return (
-    <div className="h-14 w-14 shrink-0 overflow-hidden rounded-md bg-slate-100">
+    <div className="h-14 w-14 shrink-0 overflow-hidden rounded-md border border-slate-200 bg-slate-100">
       {item.previewUrl && item.type === "生图" ? (
         <ImageWithFallback
           alt={item.title}
           className="h-full w-full object-cover"
-          fallbackClassName={`h-full w-full bg-gradient-to-br ${item.palette ?? "from-slate-100 to-slate-300"}`}
+        fallbackClassName={`h-full w-full bg-gradient-to-br ${item.palette ?? "from-slate-800 to-slate-600"}`}
           fallbackIconClassName="h-5 w-5"
           src={item.previewUrl}
         />
       ) : (
         <div
           className={`flex h-full w-full items-center justify-center bg-gradient-to-br ${
-            item.palette ?? "from-slate-100 to-slate-300"
+            item.palette ?? "from-slate-800 to-slate-600"
           }`}
         >
           {item.type === "生图" ? (
@@ -1832,11 +1860,11 @@ function StatusBadge({ status }: { status: ProjectStatus }) {
     <Badge
       className={
         status === "已完成"
-          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+          ? "border-cyan-200 bg-cyan-50 text-cyan-700"
           : status === "部分完成"
             ? "border-amber-200 bg-amber-50 text-amber-700"
           : status === "生成中"
-            ? "border-indigo-200 bg-indigo-50 text-indigo-700"
+            ? "border-cyan-200 bg-cyan-50 text-cyan-700"
             : "border-rose-200 bg-rose-50 text-rose-700"
       }
       variant="outline"
@@ -1857,9 +1885,9 @@ function HistoryDetailPanel({
 }) {
   if (!item) {
     return (
-      <div className="rounded-lg border border-slate-200 bg-white p-5">
-        <h2 className="text-base font-semibold">项目详情</h2>
-        <div className="mt-4 flex aspect-[4/3] items-center justify-center rounded-lg bg-slate-100 text-center text-sm text-slate-500">
+      <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-[0_14px_38px_rgba(15,23,42,0.06)]">
+        <h2 className="text-base font-semibold text-slate-950">项目详情</h2>
+        <div className="mt-4 flex aspect-[4/3] items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-center text-sm text-slate-500">
           请选择一个历史项目
         </div>
       </div>
@@ -1885,13 +1913,13 @@ function HistoryDetailPanel({
   }
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-5">
+    <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-[0_14px_38px_rgba(15,23,42,0.06)]">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-base font-semibold">项目详情</h2>
+        <h2 className="text-base font-semibold text-slate-950">项目详情</h2>
         <StatusBadge status={item.status} />
       </div>
 
-      <div className="mt-4 overflow-hidden rounded-lg border border-slate-200 bg-slate-950">
+      <div className="mt-4 overflow-hidden rounded-lg border border-slate-200 bg-white">
         {imageUrls.length > 0 && item.type === "生图" ? (
           <div className={imageUrls.length === 1 ? "grid gap-2" : "grid grid-cols-2 gap-2 bg-white p-2"}>
             {imageUrls.map((url, index) => (
@@ -1921,7 +1949,7 @@ function HistoryDetailPanel({
             {item.type === "视频" ? (
               <button
                 aria-label="播放历史视频预览"
-                className="flex h-12 w-12 cursor-pointer items-center justify-center rounded-full bg-white/90 text-indigo-700 transition hover:bg-white"
+                className="flex h-12 w-12 cursor-pointer items-center justify-center rounded-full bg-slate-950 text-white transition hover:bg-slate-800"
                 type="button"
               >
                 <Play className="ml-0.5 h-5 w-5 fill-current" />
@@ -1935,7 +1963,7 @@ function HistoryDetailPanel({
 
       <div className="mt-4 space-y-3">
         <div>
-          <div className="text-sm font-medium text-slate-700">{item.title}</div>
+          <div className="text-sm font-medium text-slate-950">{item.title}</div>
           <div className="mt-1 text-xs text-slate-500">
             {item.type} · {item.time}
             {item.previewLabel ? ` · ${item.previewLabel}` : ""}
@@ -1948,30 +1976,30 @@ function HistoryDetailPanel({
       </div>
 
       <div className="mt-5 grid gap-2 sm:grid-cols-2">
-        <Button disabled={!canUseResult} onClick={() => item.previewUrl && openAsset(item.previewUrl)} variant="outline">
+        <Button className="bg-white text-slate-700 hover:bg-slate-100 hover:text-slate-950" disabled={!canUseResult} onClick={() => item.previewUrl && openAsset(item.previewUrl)} variant="outline">
           <Eye className="h-4 w-4" />
           查看结果
         </Button>
-        <Button disabled={!canUseResult} onClick={handleDownload} variant="outline">
+        <Button className="bg-white text-slate-700 hover:bg-slate-100 hover:text-slate-950" disabled={!canUseResult} onClick={handleDownload} variant="outline">
           <Download className="h-4 w-4" />
           下载
         </Button>
-        <Button disabled={!prompt} onClick={() => copyText(prompt)} variant="outline">
+        <Button className="bg-white text-slate-700 hover:bg-slate-100 hover:text-slate-950" disabled={!prompt} onClick={() => copyText(prompt)} variant="outline">
           <Copy className="h-4 w-4" />
           复制提示词
         </Button>
-        <Button onClick={() => onSectionChange(item.type === "视频" ? "video" : "image")} variant="outline">
+        <Button className="bg-white text-slate-700 hover:bg-slate-100 hover:text-slate-950" onClick={() => onSectionChange(item.type === "视频" ? "video" : "image")} variant="outline">
           <RotateCcw className="h-4 w-4" />
           重新生成
         </Button>
         {item.id.startsWith("seed-") ? (
-          <Button className="sm:col-span-2" disabled variant="outline">
+          <Button className="bg-white text-slate-500 sm:col-span-2" disabled variant="outline">
             <Trash2 className="h-4 w-4" />
             示例项目不可删除
           </Button>
         ) : (
           <Button
-            className="border-rose-200 text-rose-700 hover:bg-rose-50 sm:col-span-2"
+            className="border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 sm:col-span-2"
             onClick={() => onDelete(item.id)}
             variant="outline"
           >
@@ -1986,9 +2014,9 @@ function HistoryDetailPanel({
 
 function DetailRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg bg-slate-50 p-3">
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
       <div className="text-xs font-medium text-slate-500">{label}</div>
-      <div className="mt-1 break-words text-sm text-slate-700">{value}</div>
+      <div className="mt-1 break-words text-sm text-slate-600">{value}</div>
     </div>
   )
 }
@@ -2072,42 +2100,42 @@ function CreditsWorkspace({
 
   return (
     <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
-      <div className="rounded-lg border border-slate-200 bg-white p-5">
+      <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-[0_14px_38px_rgba(15,23,42,0.06)]">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <div className="flex items-center gap-2">
-              <Coins className="h-5 w-5 text-emerald-600" />
-              <h2 className="text-base font-semibold">兑换 AI 点数</h2>
+              <Coins className="h-5 w-5 text-cyan-600" />
+              <h2 className="text-base font-semibold text-slate-950">兑换 AI 点数</h2>
             </div>
             <p className="mt-2 text-sm text-slate-500">向客服购买兑换码后，在这里输入兑换码完成点数充值。</p>
           </div>
-          <Badge className="border-emerald-200 bg-emerald-50 text-emerald-700" variant="outline">
+          <Badge className="border-cyan-200 bg-cyan-50 text-cyan-700" variant="outline">
             Supabase 兑换
           </Badge>
         </div>
 
-        <div className="mt-5 rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+        <div className="mt-5 rounded-2xl border border-cyan-200 bg-cyan-50 p-4">
           <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
             <div>
-              <div className="flex items-center gap-2 text-sm font-medium text-emerald-950">
+              <div className="flex items-center gap-2 text-sm font-medium text-cyan-800">
                 <WalletCards className="h-4 w-4" />
                 当前余额
               </div>
-              <div className="mt-2 text-3xl font-semibold tracking-tight text-emerald-700">
+              <div className="mt-2 text-3xl font-semibold tracking-tight text-cyan-700">
                 {creditBalance.toLocaleString()}
-                <span className="ml-2 text-sm font-normal text-emerald-800">点</span>
+                <span className="ml-2 text-sm font-normal text-cyan-600">点</span>
               </div>
             </div>
-            <div className="border-t border-emerald-200 pt-3 sm:border-l sm:border-t-0 sm:pl-4 sm:pt-0">
-              <div className="text-sm font-medium text-emerald-950">{getMembershipLabel(membershipTier)} 到期时间</div>
-              <div className="mt-2 text-lg font-semibold text-emerald-700">
+            <div className="border-t border-cyan-200 pt-3 sm:border-l sm:border-t-0 sm:pl-4 sm:pt-0">
+              <div className="text-sm font-medium text-cyan-800">{getMembershipLabel(membershipTier)} 到期时间</div>
+              <div className="mt-2 text-lg font-semibold text-cyan-700">
                 {membershipExpiresAt ? formatMembershipExpiresAt(membershipExpiresAt) : "未开通"}
               </div>
               {membershipExpiresAt && !isMembershipActive(membershipTier, membershipExpiresAt) && (
                 <div className="mt-1 text-xs text-rose-600">会员已过期</div>
               )}
               {isMembershipActive(membershipTier, membershipExpiresAt) && membershipFreeImageQualities.length > 0 && (
-                <div className="mt-1 text-xs text-emerald-800">
+                <div className="mt-1 text-xs text-cyan-700">
                   生图免费：{membershipFreeImageQualities.join(" / ")}
                 </div>
               )}
@@ -2115,8 +2143,8 @@ function CreditsWorkspace({
           </div>
         </div>
 
-        <div className="mt-4 rounded-lg bg-slate-50 p-4">
-          <div className="text-sm font-medium text-slate-700">Supabase 用户 ID</div>
+        <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+          <div className="text-sm font-medium text-slate-600">Supabase 用户 ID</div>
           <div className="mt-1 break-all text-xs text-slate-500">{userId}</div>
         </div>
 
@@ -2132,10 +2160,10 @@ function CreditsWorkspace({
                 handleRedeem()
               }
             }}
-            className="h-10 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none transition focus:border-emerald-300 focus:bg-white focus:ring-2 focus:ring-emerald-100"
+            className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-100"
             placeholder="请输入兑换码"
           />
-          <Button className="bg-emerald-600 text-white hover:bg-emerald-700" disabled={isRedeeming} onClick={handleRedeem}>
+          <Button className="rounded-2xl bg-slate-950 text-white hover:bg-slate-800" disabled={isRedeeming} onClick={handleRedeem}>
             {isRedeeming ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             {isRedeeming ? "兑换中..." : "立即兑换"}
           </Button>
@@ -2145,8 +2173,8 @@ function CreditsWorkspace({
           <div
             className={
               feedback.type === "success"
-                ? "mt-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700"
-                : "mt-4 flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700"
+                ? "mt-4 flex items-center gap-2 rounded-2xl border border-cyan-200 bg-cyan-50 px-3 py-2 text-sm text-cyan-700"
+                : "mt-4 flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700"
             }
           >
             {feedback.type === "success" ? <CheckCircle2 className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
@@ -2154,8 +2182,8 @@ function CreditsWorkspace({
           </div>
         )}
 
-        <div className="mt-5 rounded-lg bg-slate-50 p-4">
-          <div className="text-sm font-medium text-slate-700">点数套餐</div>
+        <div className="mt-5 rounded-lg border border-slate-200 bg-slate-50 p-4">
+          <div className="text-sm font-medium text-slate-600">点数套餐</div>
           <div className="mt-2 grid gap-2">
             {creditPackages.length === 0 ? (
               <div className="text-xs text-slate-500">暂无启用套餐，请联系管理员配置。</div>
@@ -2173,7 +2201,7 @@ function CreditsWorkspace({
                         : `${item.price_cny.toFixed(2)} 元`}
                     </div>
                   </div>
-                  <div className="text-right font-semibold text-emerald-700">
+                  <div className="text-right font-semibold text-cyan-700">
                     {item.package_type === "membership"
                       ? `${getMembershipLabel(item.membership_tier)} · ${item.membership_free_image_qualities.join("/") || "生图"} 免费`
                       : `${item.credits.toLocaleString()} 点`}
@@ -2189,8 +2217,8 @@ function CreditsWorkspace({
           )}
         </div>
 
-        <div className="mt-5 rounded-lg border border-slate-200 p-4">
-          <div className="text-sm font-medium text-slate-700">点数流水</div>
+        <div className="mt-5 rounded-lg border border-slate-200 bg-slate-50 p-4">
+          <div className="text-sm font-medium text-slate-600">点数流水</div>
           <div className="mt-3 grid gap-2">
             {ledger.length === 0 ? (
               <div className="text-xs text-slate-500">暂无兑换记录。</div>
@@ -2201,7 +2229,7 @@ function CreditsWorkspace({
                     <div className="truncate font-medium text-slate-700">{item.code}</div>
                     <div className="text-xs text-slate-500">{formatLedgerDateTime(item.createdAt)}</div>
                   </div>
-                  <div className={item.amount >= 0 ? "font-medium text-emerald-700" : "font-medium text-rose-700"}>
+                  <div className={item.amount >= 0 ? "font-medium text-cyan-700" : "font-medium text-rose-600"}>
                     {item.amount >= 0 ? "+" : ""}
                     {item.amount.toLocaleString()} 点
                   </div>
@@ -2212,12 +2240,12 @@ function CreditsWorkspace({
         </div>
       </div>
 
-      <div className="rounded-lg border border-slate-200 bg-white p-5">
+      <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-[0_14px_38px_rgba(15,23,42,0.06)]">
         <div className="flex items-center gap-2">
-          <QrCode className="h-5 w-5 text-indigo-600" />
-          <h2 className="text-base font-semibold">客服微信二维码</h2>
+          <QrCode className="h-5 w-5 text-cyan-600" />
+          <h2 className="text-base font-semibold text-slate-950">客服微信二维码</h2>
         </div>
-        <div className="mt-5 flex aspect-square items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50">
+        <div className="mt-5 flex aspect-square items-center justify-center rounded-lg border border-dashed bg-slate-50">
           {customerService.qrCodeUrl ? (
             <img
               alt="客服微信二维码"
@@ -2227,13 +2255,13 @@ function CreditsWorkspace({
           ) : (
             <div className="text-center">
               <QrCode className="mx-auto h-16 w-16 text-slate-400" />
-              <p className="mt-3 text-sm font-medium text-slate-700">二维码图片占位</p>
+              <p className="mt-3 text-sm font-medium text-slate-600">二维码图片占位</p>
               <p className="mt-1 text-xs text-slate-500">请在管理员后台配置二维码 URL</p>
             </div>
           )}
         </div>
-        <div className="mt-4 space-y-2 rounded-lg bg-slate-50 p-4 text-sm text-slate-600">
-          <div className="font-medium text-slate-800">购买流程</div>
+        <div className="mt-4 space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-400">
+          <div className="font-medium text-slate-700">购买流程</div>
           <div>1. 添加客服微信{customerService.wechatId ? `：${customerService.wechatId}` : "。"}</div>
           <div>2. 向客服购买 AI 点数兑换码。</div>
           <div>3. 回到本页输入兑换码并完成充值。</div>
@@ -2241,325 +2269,5 @@ function CreditsWorkspace({
         </div>
       </div>
     </section>
-  )
-}
-
-function OptionGroup({
-  label,
-  onChange,
-  options,
-  selected,
-}: {
-  label: string
-  onChange?: (value: string) => void
-  options: string[]
-  selected?: string
-}) {
-  const isModelGroup = label.includes("模型")
-
-  return (
-    <div>
-      <label className="text-sm font-medium text-slate-700">{label}</label>
-      <div className={isModelGroup ? "mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3" : "mt-2 flex flex-wrap gap-2"}>
-        {options.map((option, index) => {
-          const isSelected = selected ? selected === option : index === 0
-
-          return (
-            <button
-              className={[
-                "cursor-pointer border text-center text-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40",
-                isModelGroup
-                  ? "grid min-h-14 w-full place-items-center rounded-xl px-3 py-2.5 font-medium leading-snug shadow-sm hover:-translate-y-0.5 hover:shadow-md"
-                  : "rounded-md px-3 py-2",
-                isSelected
-                  ? isModelGroup
-                    ? "border-indigo-500 bg-indigo-50 text-indigo-700 shadow-indigo-100 ring-1 ring-indigo-500/15"
-                    : "border-indigo-600 bg-indigo-50 font-medium text-indigo-700"
-                  : isModelGroup
-                    ? "border-slate-200 bg-white text-slate-600 shadow-slate-100 hover:border-indigo-200 hover:bg-indigo-50/50 hover:text-indigo-700"
-                    : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50",
-              ].join(" ")}
-              key={option}
-              onClick={() => onChange?.(option)}
-              type="button"
-            >
-              {getOptionLabel(option)}
-            </button>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-function ImageResultPanel({
-  imageCount,
-  isGenerating,
-  onRegenerate,
-  result,
-}: {
-  imageCount: number
-  isGenerating: boolean
-  onRegenerate: () => void
-  result: ImageResult | null
-}) {
-  const imageUrls = result?.imageUrls?.length ? result.imageUrls : result?.imageUrl ? [result.imageUrl] : []
-  const badgeClassName =
-    result?.status === "部分完成"
-      ? "border-amber-200 bg-amber-50 text-amber-700"
-      : result?.status === "失败"
-        ? "border-rose-200 bg-rose-50 text-rose-700"
-        : "border-emerald-200 bg-emerald-50 text-emerald-700"
-  const handleDownload = () => {
-    if (!result?.imageUrl) return
-
-    const extension = getAssetExtension(result.imageUrl, "png")
-    downloadAsset(result.imageUrl, `image-${result.id}.${extension}`)
-  }
-
-  if (isGenerating || result?.status === "生成中") {
-    return (
-      <div className="rounded-lg border border-slate-200 bg-white p-5">
-        <h2 className="text-base font-semibold">结果预览</h2>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          {Array.from({ length: imageCount }, (_, index) => (
-            <div className="aspect-square animate-pulse rounded-lg bg-slate-100" key={index} />
-          ))}
-        </div>
-        <div className="mt-4 flex items-center gap-2 text-sm text-slate-500">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          正在生成图片结果{result ? ` · ${result.progress}%` : ""}
-        </div>
-        {result?.taskId && <div className="mt-2 text-xs text-slate-400">任务 ID：{result.taskId}</div>}
-      </div>
-    )
-  }
-
-  if (!result) {
-    return <PreviewPanel title="结果预览" label="输入提示词后点击开始生图" />
-  }
-
-  return (
-    <div className="rounded-lg border border-slate-200 bg-white p-5">
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="text-base font-semibold">结果预览</h2>
-        <Badge className={badgeClassName} variant="outline">
-          <CheckCircle2 className="h-3 w-3" />
-          {result.status}
-        </Badge>
-      </div>
-      <div className="mt-4 overflow-hidden rounded-lg border border-slate-200 bg-white">
-        {imageUrls.length > 0 ? (
-          <div className={imageUrls.length === 1 ? "grid gap-2" : "grid grid-cols-2 gap-2 p-2"}>
-            {imageUrls.map((url, index) => (
-              <ImageWithFallback
-                alt={`${result.prompt} ${index + 1}`}
-                className="aspect-square w-full rounded-md object-cover"
-                fallbackClassName={`aspect-square rounded-md bg-gradient-to-br ${result.palette}`}
-                key={`${url}-${index}`}
-                src={url}
-                showMessage
-              />
-            ))}
-          </div>
-        ) : (
-          <div className={`aspect-square bg-gradient-to-br ${result.palette}`} />
-        )}
-        <div className="p-3">
-          <div className="min-w-0">
-            <div className="truncate text-sm font-medium">{result.prompt}</div>
-            <div className="truncate text-xs text-slate-500">
-              {result.quality} · {result.ratio} · {result.imageCount} 张
-            </div>
-          </div>
-        </div>
-      </div>
-      <div className="mt-3 grid gap-2 sm:grid-cols-2">
-        <Button disabled={!result.imageUrl} onClick={handleDownload} variant="outline">
-          <Download className="h-4 w-4" />
-          下载结果
-        </Button>
-        <Button disabled={isGenerating} onClick={onRegenerate} variant="outline">
-          <RotateCcw className="h-4 w-4" />
-          重新生成
-        </Button>
-      </div>
-      <div className="mt-4 rounded-lg bg-slate-50 p-3 text-xs text-slate-500">
-        <div className="font-medium text-slate-700">生成参数</div>
-        <div className="mt-1">
-          {result.model} · {result.quality} · {result.ratio} · {result.imageCount} 张
-        </div>
-        <div className="mt-1">任务 ID：{result.taskId}</div>
-        {result.taskError && <div className="mt-1 text-amber-700">生成说明：{result.taskError}</div>}
-      </div>
-    </div>
-  )
-}
-
-function VideoResultPanel({
-  isGenerating,
-  onRegenerate,
-  result,
-}: {
-  isGenerating: boolean
-  onRegenerate: () => void
-  result: VideoResult | null
-}) {
-  const handleDownload = () => {
-    if (!result?.videoUrl) return
-
-    const extension = getAssetExtension(result.videoUrl, "mp4")
-    downloadVideoDirect(result.videoUrl, `video-${result.id}.${extension}`)
-  }
-
-  if (isGenerating || result?.status === "生成中") {
-    return (
-      <div className="rounded-lg border border-slate-200 bg-white p-5">
-        <h2 className="text-base font-semibold">视频预览</h2>
-        <div className="mt-4 overflow-hidden rounded-lg border border-slate-200 bg-slate-950">
-          <div className="flex aspect-video animate-pulse items-center justify-center bg-slate-900">
-            <Loader2 className="h-8 w-8 animate-spin text-white" />
-          </div>
-          <div className="space-y-2 p-3">
-            <div className="h-2 rounded-full bg-slate-700" />
-            <div className="h-2 w-2/3 rounded-full bg-slate-800" />
-          </div>
-        </div>
-        <div className="mt-4 flex items-center gap-2 text-sm text-slate-500">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          正在生成视频任务{result ? ` · ${result.progress}%` : ""}
-        </div>
-        {result?.taskId && <div className="mt-2 text-xs text-slate-400">任务 ID：{result.taskId}</div>}
-      </div>
-    )
-  }
-
-  if (!result) {
-    return <PreviewPanel title="视频预览" label="输入提示词后点击开始生成视频" />
-  }
-
-  return (
-    <div className="rounded-lg border border-slate-200 bg-white p-5">
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="text-base font-semibold">视频预览</h2>
-        <Badge className="border-emerald-200 bg-emerald-50 text-emerald-700" variant="outline">
-          <CheckCircle2 className="h-3 w-3" />
-          {result.status}
-        </Badge>
-      </div>
-      <div className="mt-4 overflow-hidden rounded-lg border border-slate-200 bg-slate-950">
-        {result.videoUrl ? (
-          <video className="aspect-video w-full bg-black" controls src={result.videoUrl} />
-        ) : (
-          <div className={`relative flex aspect-video items-center justify-center bg-gradient-to-br ${result.palette}`}>
-            <div className="absolute left-3 top-3 rounded-md bg-black/40 px-2 py-1 text-xs text-white">
-              {result.quality}
-            </div>
-            <button
-              aria-label="播放视频预览"
-              className="flex h-14 w-14 cursor-pointer items-center justify-center rounded-full bg-white/90 text-indigo-700 shadow-sm transition hover:bg-white"
-              type="button"
-            >
-              <Play className="ml-0.5 h-6 w-6 fill-current" />
-            </button>
-          </div>
-        )}
-        <div className="p-3 text-white">
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="truncate text-sm font-medium">{result.sceneTitle}</div>
-              <div className="mt-1 truncate text-xs text-slate-300">
-                {result.duration} · {result.quality} · {result.aspectRatio}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div className="mt-3 grid gap-2 sm:grid-cols-2">
-        <Button disabled={!result.videoUrl} onClick={handleDownload} variant="outline">
-          <Download className="h-4 w-4" />
-          下载结果
-        </Button>
-        <Button disabled={isGenerating} onClick={onRegenerate} variant="outline">
-          <RotateCcw className="h-4 w-4" />
-          重新生成
-        </Button>
-      </div>
-      <div className="mt-4 rounded-lg bg-slate-50 p-3 text-xs text-slate-500">
-        <div className="font-medium text-slate-700">生成参数</div>
-        <div className="mt-1">
-          {result.model} · {result.duration} · {result.quality} · {result.aspectRatio}
-        </div>
-        <div className="mt-1">任务 ID：{result.taskId}</div>
-        {result.taskError && <div className="mt-1 text-rose-600">失败原因：{result.taskError}</div>}
-      </div>
-    </div>
-  )
-}
-
-function PreviewPanel({ title, label }: { title: string; label: string }) {
-  return (
-    <div className="rounded-lg border border-slate-200 bg-white p-5">
-      <h2 className="text-base font-semibold">{title}</h2>
-      <div className="mt-4 flex aspect-[4/3] items-center justify-center rounded-lg bg-slate-100">
-        <div className="text-center text-slate-500">
-          <Sparkles className="mx-auto h-8 w-8" />
-          <p className="mt-2 text-sm">{label}</p>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function QuickEntryGrid({
-  onSectionChange,
-}: {
-  onSectionChange: (section: WorkspaceSection) => void
-}) {
-  return (
-    <section className="grid gap-4 md:grid-cols-3">
-      <QuickEntry
-        description="查看所有图片和视频任务"
-        icon={History}
-        label="历史项目"
-        onClick={() => onSectionChange("history")}
-      />
-      <QuickEntry
-        description="添加微信购买兑换码"
-        icon={Coins}
-        label="点数充值"
-        onClick={() => onSectionChange("credits")}
-      />
-      <QuickEntry
-        description="预留模型和接口配置"
-        icon={Sparkles}
-        label="模型接入"
-        onClick={() => onSectionChange("credits")}
-      />
-    </section>
-  )
-}
-
-function QuickEntry({
-  description,
-  icon: Icon,
-  label,
-  onClick,
-}: {
-  description: string
-  icon: typeof Sparkles
-  label: string
-  onClick: () => void
-}) {
-  return (
-    <button
-      className="cursor-pointer rounded-lg border border-slate-200 bg-white p-4 text-left transition hover:border-indigo-200 hover:bg-indigo-50"
-      onClick={onClick}
-      type="button"
-    >
-      <Icon className="h-5 w-5 text-indigo-600" />
-      <div className="mt-3 font-medium">{label}</div>
-      <div className="mt-1 text-sm text-slate-500">{description}</div>
-    </button>
   )
 }

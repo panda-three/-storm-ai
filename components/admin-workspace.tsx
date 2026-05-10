@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import type { WorkspaceSection } from "@/app/page"
+import Link from "next/link"
 import { adminVideoModelOptions, imageModelOptions, imageModelSettings, videoModelSettings } from "@/lib/model-options"
 import type { AdminAccountSummary, CreditPackage, CustomerServiceSettings, ModelPricing, RedeemCode } from "@/lib/supabase"
 import { calculatePricingCredits, createRedeemCode, saveCreditPackage, saveCustomerServiceSettings, saveModelPricing } from "@/lib/supabase"
@@ -10,7 +10,6 @@ import { Button } from "@/components/ui/button"
 import { formatLedgerDateTime, getLedgerTimeValue } from "@/lib/date-time"
 
 interface AdminWorkspaceProps {
-  canAccessAdmin: boolean
   adminAccounts: AdminAccountSummary[]
   creditPackages: CreditPackage[]
   customerService: CustomerServiceSettings
@@ -18,8 +17,6 @@ interface AdminWorkspaceProps {
   onModelPricingChange: (pricing: ModelPricing[]) => void
   onPackagesChange: (packages: CreditPackage[]) => void
   onRefresh: () => Promise<void>
-  onRedeemCodesChange: (codes: RedeemCode[]) => void
-  onSectionChange: (section: WorkspaceSection) => void
   onSettingsChange: (settings: CustomerServiceSettings) => void
   onToggleSidebar: () => void
   redeemCodes: RedeemCode[]
@@ -115,7 +112,6 @@ function getDefaultPricingForm(type: "image" | "video"): Omit<ModelPricing, "id"
 }
 
 export function AdminWorkspace({
-  canAccessAdmin,
   adminAccounts,
   creditPackages,
   customerService,
@@ -123,7 +119,6 @@ export function AdminWorkspace({
   onModelPricingChange,
   onPackagesChange,
   onRefresh,
-  onSectionChange,
   onSettingsChange,
   onToggleSidebar,
   redeemCodes,
@@ -179,6 +174,10 @@ export function AdminWorkspace({
     items.push(page)
     return items
   }, [])
+
+  useEffect(() => {
+    setSettingsForm(customerService)
+  }, [customerService])
 
   useEffect(() => {
     if (ledgerPage > ledgerPageCount) {
@@ -394,15 +393,16 @@ export function AdminWorkspace({
             <p className="hidden truncate text-sm text-slate-500 sm:block">管理客服配置和点数套餐。</p>
           </div>
         </div>
-        <Button onClick={() => onSectionChange("image")} size="sm" variant="outline">
-          <ArrowLeft className="h-4 w-4" />
-          返回工作台
+        <Button asChild size="sm" variant="outline">
+          <Link href="/">
+            <ArrowLeft className="h-4 w-4" />
+            返回工作台
+          </Link>
         </Button>
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6 lg:px-8">
-        {canAccessAdmin ? (
-          <section className="mx-auto grid max-w-6xl gap-5">
+        <section className="mx-auto grid max-w-6xl gap-5">
             <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
               <div className="flex items-center gap-2 text-emerald-800">
                 <ShieldCheck className="h-5 w-5" />
@@ -934,21 +934,7 @@ export function AdminWorkspace({
                 )}
               </div>
             </div>
-          </section>
-        ) : (
-          <section className="mx-auto max-w-xl rounded-lg border border-rose-200 bg-white p-6">
-            <div className="flex items-center gap-2 text-rose-700">
-              <AlertCircle className="h-5 w-5" />
-              <h2 className="text-base font-semibold">无管理员权限</h2>
-            </div>
-            <p className="mt-2 text-sm text-slate-600">
-              当前账号不是管理员。请在 Supabase 的 `user_accounts` 表中将你的账号 `role` 设置为 `admin` 后重新登录。
-            </p>
-            <Button className="mt-5" onClick={() => onSectionChange("image")}>
-              返回工作台
-            </Button>
-          </section>
-        )}
+        </section>
       </div>
     </main>
   )

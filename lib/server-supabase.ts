@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
+import { fetchSafeRemoteResource, parseSafeRemoteUrl } from "@/lib/safe-fetch-url"
 
 export interface AuthenticatedRequestUser {
   token: string
@@ -200,12 +201,17 @@ export async function persistRemoteGeneratedImage({
   userId: string
 }) {
   let response: Response
+  let parsedSourceUrl: URL
 
   try {
-    response = await fetch(sourceUrl, {
-      redirect: "follow",
-      signal: AbortSignal.timeout(30000),
-    })
+    parsedSourceUrl = parseSafeRemoteUrl(sourceUrl, { allowHttp: process.env.NODE_ENV !== "production" })
+    response = await fetchSafeRemoteResource(
+      parsedSourceUrl,
+      {
+        signal: AbortSignal.timeout(30000),
+      },
+      { allowHttp: process.env.NODE_ENV !== "production" }
+    )
   } catch (error) {
     throw new Error(`生成图片地址不可访问：${describeServerError(error, "请求图片失败。")}`, { cause: error })
   }
