@@ -1,7 +1,9 @@
 import { getTaskStatus, isApimartRateLimitError } from "@/lib/apimart"
 import {
+  failGenerationJobWithRefund,
   isTerminalGenerationJobStatus,
   lockGenerationJobForSync,
+  updateActiveGenerationJob,
   updateGenerationJob,
   type GenerationJob,
   type GenerationJobStatus,
@@ -62,22 +64,15 @@ export async function syncApimartGenerationJob(job: GenerationJob): Promise<Sync
           ? "partial_completed"
           : result.status
     const storedResultUrls = resultUrls
+    let nextJob: GenerationJob
 
     try {
       if (status === "failed" && lockedJob.status !== "failed") {
-        await refundJobCredits({
-          amount: lockedJob.amount,
-          job: lockedJob,
-          reason: `AI 生成失败退款 · ${lockedJob.model}`,
-          reference: lockedJob.reference,
+        nextJob = await failGenerationJobWithRefund({
+          jobId: lockedJob.id,
+          reason: taskError || `AI 生成失败退款 · ${lockedJob.model}`,
         })
-      } else if (status === "partial_completed" && lockedJob.status !== "partial_completed") {
-        await refundJobCredits({
-          amount: calculatePartialRefundAmount(lockedJob.amount, resultUrls.length, expectedResultCount),
-          job: lockedJob,
-          reason: `AI 生图部分失败退款 · ${lockedJob.model} · ${expectedResultCount - resultUrls.length}/${expectedResultCount} 张`,
-          reference: buildPartialRefundReference(lockedJob.reference, resultUrls.length, expectedResultCount),
-        })
+        return { job: nextJob, locked: true, status: "synced" }
       }
     } catch (error) {
       if (result.status === "completed" && lockedJob.type === "image" && !result.mode.includes("mock")) {
@@ -86,11 +81,9 @@ export async function syncApimartGenerationJob(job: GenerationJob): Promise<Sync
       throw error
     }
 
-    let nextJob: GenerationJob
-
     try {
       const now = new Date().toISOString()
-      nextJob = await updateGenerationJob(lockedJob.id, {
+      const updatedJob = await updateActiveGenerationJob(lockedJob.id, {
         check_attempts: 0,
         completed_at: isTerminalGenerationJobStatus(status) ? lockedJob.completed_at ?? now : lockedJob.completed_at,
         last_checked_at: now,
@@ -101,6 +94,24 @@ export async function syncApimartGenerationJob(job: GenerationJob): Promise<Sync
         sync_locked_until: null,
         task_error: taskError || null,
       })
+
+      if (!updatedJob) {
+        if (result.status === "completed" && lockedJob.type === "image" && !result.mode.includes("mock")) {
+          await Promise.all(resultUrls.map((url) => deleteGeneratedImageByPublicUrl(url)))
+        }
+        return { job: lockedJob, locked: true, status: "skipped" }
+      }
+
+      nextJob = updatedJob
+
+      if (status === "partial_completed" && lockedJob.status !== "partial_completed") {
+        await refundJobCredits({
+          amount: calculatePartialRefundAmount(lockedJob.amount, resultUrls.length, expectedResultCount),
+          job: lockedJob,
+          reason: `AI 生图部分失败退款 · ${lockedJob.model} · ${expectedResultCount - resultUrls.length}/${expectedResultCount} 张`,
+          reference: buildPartialRefundReference(lockedJob.reference, resultUrls.length, expectedResultCount),
+        })
+      }
     } catch (error) {
       if (result.status === "completed" && lockedJob.type === "image" && !result.mode.includes("mock")) {
         await Promise.all(resultUrls.map((url) => deleteGeneratedImageByPublicUrl(url)))

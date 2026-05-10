@@ -1,14 +1,16 @@
 import { NextResponse } from "next/server"
-import { createGenerationJob, updateGenerationJob } from "@/lib/generation-jobs"
+import {
+  createGenerationJobWithBilling,
+  failGenerationJobWithRefund,
+  updateActiveGenerationJob,
+} from "@/lib/generation-jobs"
 import { createVideoGeneration, normalizeVideoDuration, uploadApimartImage } from "@/lib/apimart"
 import { createMengfactoryVideo } from "@/lib/mengfactory"
 import { calculatePricingCredits, type ModelPricing } from "@/lib/supabase"
 import {
   getSupabaseServerClient,
   describeServerError,
-  refundGenerationCredits,
   requireAuthenticatedUser,
-  spendGenerationCredits,
   uploadGeneratedImage,
 } from "@/lib/server-supabase"
 import {
@@ -22,9 +24,6 @@ const maxReferenceImageBytes = 10 * 1024 * 1024
 const supportedReferenceImageTypes = ["image/jpeg", "image/png", "image/webp"]
 
 export async function POST(request: Request) {
-  let billed = false
-  let billingReference = ""
-  let billingAmount = 0
   let billingReason = ""
   let jobId = ""
   let userId = ""
@@ -69,8 +68,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "当前模型参数未配置价格，请联系管理员配置后再生成。" }, { status: 400 })
     }
 
-    billingAmount = calculatePricingCredits(pricing)
-    billingReference = `generate_video_${Date.now()}_${crypto.randomUUID()}`
+    const billingAmount = calculatePricingCredits(pricing)
+    const billingReference = `generate_video_${Date.now()}_${crypto.randomUUID()}`
     billingReason = `AI 视频 · ${model} · ${duration} · ${quality} · ${aspectRatio}`
 
     logGenerateVideo("input", {
@@ -84,19 +83,12 @@ export async function POST(request: Request) {
       userId: maskId(userId),
     })
 
-    await spendGenerationCredits({
-      amount: billingAmount,
-      reason: billingReason,
-      reference: billingReference,
-      userId,
-    })
-    billed = true
-
-    const job = await createGenerationJob({
+    const job = await createGenerationJobWithBilling({
       amount: billingAmount,
       model,
       prompt,
       provider: isMengfactoryVeoVideoModel(model) ? "mengfactory" : "apimart",
+      reason: billingReason,
       reference: billingReference,
       type: "video",
       userId,
@@ -117,11 +109,15 @@ export async function POST(request: Request) {
       logGenerateVideo("generation input", generationInput)
 
       const result = await createMengfactoryVideo(generationInput)
-      await updateGenerationJob(job.id, {
+      const nextJob = await updateActiveGenerationJob(job.id, {
         next_check_at: new Date(Date.now() + 5000).toISOString(),
         status: result.status === "submitted" ? "submitted" : "processing",
         upstream_task_id: result.taskId,
       })
+
+      if (!nextJob) {
+        throw new Error("生成任务已结束，不能提交上游任务。")
+      }
 
       logGenerateVideo("output", result)
 
@@ -149,11 +145,15 @@ export async function POST(request: Request) {
     logGenerateVideo("generation input", generationInput)
 
     const result = await createVideoGeneration(generationInput)
-    await updateGenerationJob(job.id, {
+    const nextJob = await updateActiveGenerationJob(job.id, {
       next_check_at: new Date(Date.now() + 5000).toISOString(),
       status: result.status === "submitted" ? "submitted" : "processing",
       upstream_task_id: result.taskId,
     })
+
+    if (!nextJob) {
+      throw new Error("生成任务已结束，不能提交上游任务。")
+    }
 
     logGenerateVideo("output", result)
 
@@ -172,18 +172,9 @@ export async function POST(request: Request) {
     })
 
     if (jobId) {
-      await updateGenerationJob(jobId, {
-        status: "failed",
-        task_error: message,
-      }).catch(() => undefined)
-    }
-
-    if (billed && userId && billingReference && billingAmount > 0) {
-      await refundGenerationCredits({
-        amount: billingAmount,
-        reason: `${billingReason || "AI 视频"}提交失败退款`,
-        reference: billingReference,
-        userId,
+      await failGenerationJobWithRefund({
+        jobId,
+        reason: `${billingReason || "AI 视频"}提交失败退款：${message}`,
       }).catch(() => undefined)
     }
 

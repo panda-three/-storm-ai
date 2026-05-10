@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server"
-import { loadGenerationJobsForUser } from "@/lib/generation-jobs"
+import { loadGenerationJobsForUser, recoverStaleGenerationJobsForUser } from "@/lib/generation-jobs"
 import { generationJobToProjectItem } from "@/lib/project-history"
 import { requireAuthenticatedUser } from "@/lib/server-supabase"
 
 export async function GET(request: Request) {
   try {
     const auth = await requireAuthenticatedUser(request)
+    await recoverStaleGenerationJobsForUser({ userId: auth.userId })
     const jobs = await loadGenerationJobsForUser({ userId: auth.userId })
 
     return NextResponse.json({

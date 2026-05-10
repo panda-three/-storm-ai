@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server"
-import { createGenerationJob, updateGenerationJob, type GenerationJobStatus } from "@/lib/generation-jobs"
+import {
+  createGenerationJobWithBilling,
+  failGenerationJobWithRefund,
+  updateActiveGenerationJob,
+  type GenerationJobStatus,
+} from "@/lib/generation-jobs"
 import { createImageGeneration, normalizeImageResolution, uploadApimartImage } from "@/lib/apimart"
 import { createMengfactoryImage } from "@/lib/mengfactory"
 import {
@@ -10,10 +15,8 @@ import {
   getSupabaseServerClient,
   describeServerError,
   deleteGeneratedImageByPublicUrl,
-  recordFreeGenerationUsage,
   refundGenerationCredits,
   requireAuthenticatedUser,
-  spendGenerationCredits,
   uploadGeneratedImage,
 } from "@/lib/server-supabase"
 import {
@@ -27,12 +30,8 @@ const maxReferenceImageBytes = 10 * 1024 * 1024
 const supportedReferenceImageTypes = ["image/jpeg", "image/png", "image/webp"]
 
 export async function POST(request: Request) {
-  let billed = false
-  let billingReference = ""
-  let billingAmount = 0
   let billingReason = ""
   let jobId = ""
-  let refundedAmount = 0
   let userId = ""
 
   try {
@@ -70,8 +69,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "当前模型参数未配置价格，请联系管理员配置后再生成。" }, { status: 400 })
     }
 
-    billingAmount = calculatePricingCredits(pricing) * imageCount
-    billingReference = `generate_image_${Date.now()}_${crypto.randomUUID()}`
+    let billingAmount = calculatePricingCredits(pricing) * imageCount
+    const billingReference = `generate_image_${Date.now()}_${crypto.randomUUID()}`
     billingReason = `AI 生图 · ${model} · ${quality} · ${imageCount} 张`
     const membershipCoversQuality = await hasActiveImageMembership({
       quality,
@@ -89,38 +88,25 @@ export async function POST(request: Request) {
       userId: maskId(userId),
     })
 
-    if (membershipCoversQuality) {
+    const isFree = membershipCoversQuality
+    if (isFree) {
       billingAmount = 0
       billingReason = `${billingReason} · 会员免费`
-    } else {
-      await spendGenerationCredits({
-        amount: billingAmount,
-        reason: billingReason,
-        reference: billingReference,
-        userId,
-      })
-      billed = true
     }
 
-    const job = await createGenerationJob({
+    const job = await createGenerationJobWithBilling({
       amount: billingAmount,
       expectedResultCount: imageCount,
+      isFree,
       model,
       prompt,
       provider: isMengfactoryGeminiImageModel(model) ? "mengfactory" : "apimart",
+      reason: billingReason,
       reference: billingReference,
       type: "image",
       userId,
     })
     jobId = job.id
-
-    if (membershipCoversQuality) {
-      await recordFreeGenerationUsage({
-        reason: billingReason,
-        reference: billingReference,
-        userId,
-      })
-    }
 
     if (isMengfactoryGeminiImageModel(model)) {
       const referenceBuffers = await Promise.all(
@@ -170,6 +156,18 @@ export async function POST(request: Request) {
               })
             : null
 
+        const nextJob = await updateActiveGenerationJob(job.id, {
+          completed_at: new Date().toISOString(),
+          result_urls: imageUrls,
+          status,
+          task_error: taskError,
+        })
+
+        if (!nextJob) {
+          await Promise.all(imageUrls.map((url) => deleteGeneratedImageByPublicUrl(url)))
+          throw new Error("生成任务已结束，迟到结果已丢弃。")
+        }
+
         if (status === "partial_completed") {
           const partialRefundAmount = calculatePartialRefundAmount(billingAmount, imageUrls.length, imageCount)
           await refundImageGenerationCredits({
@@ -178,15 +176,7 @@ export async function POST(request: Request) {
             reference: buildPartialRefundReference(billingReference, imageUrls.length, imageCount),
             userId,
           })
-          refundedAmount += partialRefundAmount
         }
-
-        await updateGenerationJob(job.id, {
-          completed_at: new Date().toISOString(),
-          result_urls: imageUrls,
-          status,
-          task_error: taskError,
-        })
 
         return NextResponse.json({
           ok: true,
@@ -226,11 +216,15 @@ export async function POST(request: Request) {
     logGenerateImage("generation input", generationInput)
 
     const result = await createImageGeneration(generationInput)
-    await updateGenerationJob(job.id, {
+    const nextJob = await updateActiveGenerationJob(job.id, {
       next_check_at: new Date(Date.now() + 5000).toISOString(),
       status: result.status === "submitted" ? "submitted" : "processing",
       upstream_task_id: result.taskId,
     })
+
+    if (!nextJob) {
+      throw new Error("生成任务已结束，不能提交上游任务。")
+    }
 
     logGenerateImage("output", result)
 
@@ -249,19 +243,9 @@ export async function POST(request: Request) {
     })
 
     if (jobId) {
-      await updateGenerationJob(jobId, {
-        status: "failed",
-        task_error: message,
-      }).catch(() => undefined)
-    }
-
-    const remainingRefundAmount = Math.max(0, billingAmount - refundedAmount)
-    if (billed && userId && billingReference && remainingRefundAmount > 0) {
-      await refundGenerationCredits({
-        amount: remainingRefundAmount,
-        reason: `${billingReason || "AI 生图"}提交失败退款`,
-        reference: billingReference,
-        userId,
+      await failGenerationJobWithRefund({
+        jobId,
+        reason: `${billingReason || "AI 生图"}提交失败退款：${message}`,
       }).catch(() => undefined)
     }
 

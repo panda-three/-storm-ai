@@ -951,6 +951,198 @@ begin
 end;
 $$;
 
+create or replace function public.create_generation_job_with_billing(
+  p_user_id uuid,
+  p_amount integer,
+  p_reason text,
+  p_reference text,
+  p_provider text,
+  p_type text,
+  p_model text,
+  p_prompt text,
+  p_expected_result_count integer,
+  p_is_free boolean default false
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_reference text := trim(p_reference);
+  v_reason text := coalesce(nullif(trim(p_reason), ''), 'AI 生成');
+  v_ledger jsonb;
+  v_job public.generation_jobs%rowtype;
+begin
+  if p_user_id is null then
+    raise exception '缺少用户 ID。';
+  end if;
+
+  if v_reference = '' then
+    raise exception '缺少生成流水号。';
+  end if;
+
+  if p_type not in ('image', 'video') then
+    raise exception '生成类型无效。';
+  end if;
+
+  if p_expected_result_count < 1 or p_expected_result_count > 4 then
+    raise exception '生成结果数量无效。';
+  end if;
+
+  insert into public.user_accounts (user_id)
+  values (p_user_id)
+  on conflict (user_id) do nothing;
+
+  if p_is_free then
+    v_ledger := jsonb_build_object(
+      'id', v_reference,
+      'type', 'generate',
+      'code', v_reason,
+      'amount', 0,
+      'createdAt', to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+    );
+
+    update public.user_accounts
+    set
+      ledger = v_ledger || ledger,
+      updated_at = now()
+    where user_id = p_user_id;
+  else
+    if p_amount <= 0 then
+      raise exception '扣费点数必须大于 0。';
+    end if;
+
+    perform 1
+    from public.user_accounts
+    where user_id = p_user_id
+      and credit_balance >= p_amount
+    for update;
+
+    if not found then
+      raise exception '点数余额不足，请先充值。';
+    end if;
+
+    v_ledger := jsonb_build_object(
+      'id', v_reference,
+      'type', 'generate',
+      'code', v_reason,
+      'amount', -p_amount,
+      'createdAt', to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+    );
+
+    update public.user_accounts
+    set
+      credit_balance = credit_balance - p_amount,
+      ledger = v_ledger || ledger,
+      updated_at = now()
+    where user_id = p_user_id;
+  end if;
+
+  insert into public.generation_jobs (
+    amount,
+    expected_result_count,
+    model,
+    prompt,
+    provider,
+    reference,
+    status,
+    type,
+    user_id
+  )
+  values (
+    case when p_is_free then 0 else p_amount end,
+    p_expected_result_count,
+    p_model,
+    p_prompt,
+    p_provider,
+    v_reference,
+    'submitted',
+    p_type,
+    p_user_id
+  )
+  returning * into v_job;
+
+  return to_jsonb(v_job);
+end;
+$$;
+
+create or replace function public.fail_generation_job_with_refund(
+  p_job_id uuid,
+  p_reason text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_job public.generation_jobs%rowtype;
+  v_refund_id text;
+  v_ledger jsonb;
+begin
+  select *
+  into v_job
+  from public.generation_jobs
+  where id = p_job_id
+  for update;
+
+  if not found then
+    raise exception '生成任务不存在。';
+  end if;
+
+  if v_job.status in ('completed', 'failed', 'partial_completed') then
+    return to_jsonb(v_job);
+  end if;
+
+  if v_job.amount > 0 then
+    v_refund_id := v_job.reference || '_refund';
+
+    insert into public.user_accounts (user_id)
+    values (v_job.user_id)
+    on conflict (user_id) do nothing;
+
+    perform 1
+    from public.user_accounts
+    where user_id = v_job.user_id
+      and ledger @> jsonb_build_array(jsonb_build_object('id', v_refund_id))
+    for update;
+
+    if not found then
+      v_ledger := jsonb_build_object(
+        'id', v_refund_id,
+        'type', 'refund',
+        'code', coalesce(nullif(trim(p_reason), ''), 'AI 生成失败退款'),
+        'amount', v_job.amount,
+        'createdAt', to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+      );
+
+      update public.user_accounts
+      set
+        credit_balance = credit_balance + v_job.amount,
+        ledger = v_ledger || ledger,
+        updated_at = now()
+      where user_id = v_job.user_id;
+    end if;
+  end if;
+
+  update public.generation_jobs
+  set
+    completed_at = coalesce(completed_at, now()),
+    last_checked_at = now(),
+    last_sync_error = p_reason,
+    next_check_at = now(),
+    status = 'failed',
+    sync_locked_until = null,
+    task_error = p_reason,
+    updated_at = now()
+  where id = v_job.id
+  returning * into v_job;
+
+  return to_jsonb(v_job);
+end;
+$$;
+
 grant execute on function public.redeem_credit_code(text) to authenticated;
 grant execute on function public.is_username_available(text) to anon, authenticated;
 grant execute on function public.save_user_projects(jsonb) to authenticated;
@@ -959,6 +1151,10 @@ revoke execute on function public.refund_credits(integer, text, text) from publi
 revoke execute on function public.spend_generation_credits(uuid, integer, text, text) from public, anon, authenticated;
 revoke execute on function public.record_free_generation_usage(uuid, text, text) from public, anon, authenticated;
 revoke execute on function public.refund_generation_credits(uuid, integer, text, text) from public, anon, authenticated;
+revoke execute on function public.create_generation_job_with_billing(uuid, integer, text, text, text, text, text, text, integer, boolean) from public, anon, authenticated;
+revoke execute on function public.fail_generation_job_with_refund(uuid, text) from public, anon, authenticated;
 grant execute on function public.spend_generation_credits(uuid, integer, text, text) to service_role;
 grant execute on function public.record_free_generation_usage(uuid, text, text) to service_role;
 grant execute on function public.refund_generation_credits(uuid, integer, text, text) to service_role;
+grant execute on function public.create_generation_job_with_billing(uuid, integer, text, text, text, text, text, text, integer, boolean) to service_role;
+grant execute on function public.fail_generation_job_with_refund(uuid, text) to service_role;
