@@ -1,7 +1,6 @@
 "use client"
 
 import { type DragEvent, useEffect, useRef, useState } from "react"
-import { useRouter } from "next/navigation"
 import type { WorkspaceSection } from "@/lib/workspace-section"
 import type { MembershipTier } from "@/lib/local-store"
 import type { ProjectItem, ProjectStatus, ProjectType } from "@/lib/project-history"
@@ -261,6 +260,15 @@ function getErrorMessage(error: unknown, fallback: string) {
   return fallback
 }
 
+function getNowLabel() {
+  return new Date().toLocaleString("zh-CN", {
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "2-digit",
+  })
+}
+
 function getOptionLabel(option: string) {
   if (option === "Gemini 3.1 Flash Image Preview") return "Gemini3香蕉pro"
   if (option === "1") return "一张"
@@ -269,6 +277,12 @@ function getOptionLabel(option: string) {
   if (option === "4") return "四张"
 
   return option === "auto" ? "默认" : option
+}
+
+function getPendingStageLabel(item: ProjectItem) {
+  if (item.status === "失败") return "生成失败"
+  if (item.status !== "生成中") return ""
+  return item.stage || "智能创意中"
 }
 
 function parseImageCount(value: string) {
@@ -595,6 +609,7 @@ function resolveImageTaskProject(task: TaskStatusResponse, fallbackUrl = "") {
     imageUrls,
     previewUrl,
     status,
+    stage: status === "生成中" ? "智能创意中" : "",
     taskError,
   }
 }
@@ -613,6 +628,7 @@ function resolveVideoTaskProject(task: TaskStatusResponse, fallbackUrl = "") {
   return {
     previewUrl,
     status,
+    stage: status === "生成中" ? "智能创意中" : "",
     taskError,
   }
 }
@@ -676,7 +692,6 @@ export function ChatArea({
   userId,
 }: ChatAreaProps) {
   const meta = sectionMeta[activeSection]
-  const router = useRouter()
 
   useEffect(() => {
     const pendingProjects = projects.filter((project) => project.status === "生成中" && project.taskId)
@@ -752,6 +767,7 @@ export function ChatArea({
               status: resolved.status,
               imageUrls: "imageUrls" in resolved ? resolved.imageUrls : project.imageUrls,
               previewUrl: resolved.previewUrl,
+              stage: resolved.stage,
               taskError: resolved.taskError,
             })
           })
@@ -796,6 +812,9 @@ export function ChatArea({
       imageUrls: result.imageUrls,
       previewLabel: `${result.quality} · ${result.ratio} · ${result.imageCount} 张`,
       previewUrl: result.imageUrl,
+      expectedCount: result.imageCount,
+      ratio: result.ratio,
+      stage: result.status === "生成中" ? "智能创意中" : "",
       taskId: result.taskId,
       taskError: result.taskError,
     })
@@ -813,12 +832,11 @@ export function ChatArea({
       prompt: result.prompt,
       previewLabel: `${result.duration} · ${result.quality} · ${result.aspectRatio}`,
       previewUrl: result.videoUrl,
+      expectedCount: 1,
+      ratio: result.aspectRatio,
+      stage: result.status === "生成中" ? "智能创意中" : "",
       taskId: result.taskId,
     })
-  }
-
-  const openResultPage = (taskId: string) => {
-    router.push(`/results/${encodeURIComponent(taskId)}`)
   }
 
   return (
@@ -868,7 +886,6 @@ export function ChatArea({
               membershipTier={membershipTier}
               modelPricing={modelPricing}
               onAccountRefresh={onAccountRefresh}
-              onResultOpen={openResultPage}
               onSectionChange={onSectionChange}
             />
           )}
@@ -878,7 +895,6 @@ export function ChatArea({
               creditBalance={creditBalance}
               modelPricing={modelPricing}
               onAccountRefresh={onAccountRefresh}
-              onResultOpen={openResultPage}
               onSectionChange={onSectionChange}
               onVideoGenerated={handleVideoGenerated}
             />
@@ -919,7 +935,6 @@ function ImageWorkspace({
   modelPricing,
   onAccountRefresh,
   onImageGenerated,
-  onResultOpen,
   onSectionChange,
 }: {
   billingReady: boolean
@@ -930,7 +945,6 @@ function ImageWorkspace({
   modelPricing: ModelPricing[]
   onAccountRefresh: () => Promise<void>
   onImageGenerated: (result: ImageResult) => void
-  onResultOpen: (taskId: string) => void
   onSectionChange: (section: WorkspaceSection) => void
 }) {
   const [prompt, setPrompt] = useState("")
@@ -1099,6 +1113,27 @@ function ImageWorkspace({
 
     setError("")
     setIsGenerating(true)
+    const optimisticId = `pending-image-${Date.now()}`
+    const resolvedRatio =
+      ratio === imageDefaultRatioOption ? resolveReferenceImageRatio(referenceImages[0], ratioOptions) : ratio
+
+    onImageGenerated({
+      id: optimisticId,
+      prompt: trimmedPrompt,
+      model,
+      quality,
+      ratio: resolvedRatio,
+      createdAt: getNowLabel(),
+      imageCount: parsedImageCount,
+      imageUrl: "",
+      imageUrls: [],
+      palette: "from-cyan-100 via-sky-100 to-teal-100",
+      status: "生成中",
+      taskId: optimisticId,
+      progress: 0,
+      taskError: "",
+    })
+    onSectionChange("history")
 
     try {
       const formData = new FormData()
@@ -1106,8 +1141,6 @@ function ImageWorkspace({
       formData.append("model", model)
       formData.append("quality", quality)
       formData.append("imageCount", String(parsedImageCount))
-      const resolvedRatio =
-        ratio === imageDefaultRatioOption ? resolveReferenceImageRatio(referenceImages[0], ratioOptions) : ratio
 
       formData.append("ratio", resolvedRatio)
       referenceImages.forEach((image) => {
@@ -1139,7 +1172,7 @@ function ImageWorkspace({
             ? "已完成"
             : "生成中"
       const generatedResult: ImageResult = {
-        id: `image-${Date.now()}`,
+        id: optimisticId,
         prompt: trimmedPrompt,
         model,
         quality,
@@ -1156,10 +1189,24 @@ function ImageWorkspace({
       }
 
       onImageGenerated(generatedResult)
-      onResultOpen(data.taskId)
       onAccountRefresh().catch(() => undefined)
     } catch (error) {
-      await onAccountRefresh().catch(() => undefined)
+      onImageGenerated({
+        id: optimisticId,
+        prompt: trimmedPrompt,
+        model,
+        quality,
+        ratio: resolvedRatio,
+        createdAt: getNowLabel(),
+        imageCount: parsedImageCount,
+        imageUrl: "",
+        imageUrls: [],
+        palette: "from-rose-100 via-slate-100 to-amber-100",
+        status: "失败",
+        taskId: optimisticId,
+        progress: 0,
+        taskError: getErrorMessage(error, "生图任务提交失败。"),
+      })
       setError(getErrorMessage(error, "生图任务提交失败。"))
     } finally {
       setIsGenerating(false)
@@ -1316,7 +1363,6 @@ function VideoWorkspace({
   creditBalance,
   modelPricing,
   onAccountRefresh,
-  onResultOpen,
   onVideoGenerated,
   onSectionChange,
 }: {
@@ -1324,7 +1370,6 @@ function VideoWorkspace({
   creditBalance: number
   modelPricing: ModelPricing[]
   onAccountRefresh: () => Promise<void>
-  onResultOpen: (taskId: string) => void
   onVideoGenerated: (result: VideoResult) => void
   onSectionChange: (section: WorkspaceSection) => void
 }) {
@@ -1498,6 +1543,25 @@ function VideoWorkspace({
 
     setError("")
     setIsGenerating(true)
+    const optimisticId = `pending-video-${Date.now()}`
+
+    onVideoGenerated({
+      id: optimisticId,
+      prompt: trimmedPrompt,
+      model,
+      aspectRatio,
+      duration,
+      quality,
+      createdAt: getNowLabel(),
+      sceneTitle: trimmedPrompt.slice(0, 24) || "视频预览",
+      palette: "from-slate-200 via-cyan-100 to-sky-100",
+      status: "生成中",
+      taskId: optimisticId,
+      progress: 0,
+      taskError: "",
+      videoUrl: "",
+    })
+    onSectionChange("history")
 
     try {
       const formData = new FormData()
@@ -1527,7 +1591,7 @@ function VideoWorkspace({
       }
 
       const generatedResult: VideoResult = {
-        id: `video-${Date.now()}`,
+        id: optimisticId,
         prompt: trimmedPrompt,
         model,
         aspectRatio,
@@ -1544,10 +1608,24 @@ function VideoWorkspace({
       }
 
       onVideoGenerated(generatedResult)
-      onResultOpen(data.taskId)
       onAccountRefresh().catch(() => undefined)
     } catch (error) {
-      await onAccountRefresh().catch(() => undefined)
+      onVideoGenerated({
+        id: optimisticId,
+        prompt: trimmedPrompt,
+        model,
+        aspectRatio,
+        duration,
+        quality,
+        createdAt: getNowLabel(),
+        sceneTitle: trimmedPrompt.slice(0, 24) || "视频预览",
+        palette: "from-rose-100 via-slate-100 to-amber-100",
+        status: "失败",
+        taskId: optimisticId,
+        progress: 0,
+        taskError: getErrorMessage(error, "视频任务提交失败。"),
+        videoUrl: "",
+      })
       setError(getErrorMessage(error, "视频任务提交失败。"))
     } finally {
       setIsGenerating(false)
@@ -1797,9 +1875,15 @@ function HistoryWorkspace({
 }
 
 function ProjectPreviewThumb({ item }: { item: ProjectItem }) {
+  const isPending = item.status === "生成中" && !item.previewUrl
+
   return (
     <div className="h-14 w-14 shrink-0 overflow-hidden rounded-md border border-slate-200 bg-slate-100">
-      {item.previewUrl && item.type === "生图" ? (
+      {isPending ? (
+        <div className="grid h-full w-full place-items-center bg-gradient-to-br from-sky-100 via-cyan-50 to-teal-100">
+          <Loader2 className="h-5 w-5 animate-spin text-cyan-600" />
+        </div>
+      ) : item.previewUrl && item.type === "生图" ? (
         <ImageWithFallback
           alt={item.title}
           className="h-full w-full object-cover"
@@ -1820,6 +1904,42 @@ function ProjectPreviewThumb({ item }: { item: ProjectItem }) {
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+function PendingResultPreview({ item }: { item: ProjectItem }) {
+  const stageLabel = getPendingStageLabel(item)
+  const expectedCount = item.type === "生图" ? Math.max(1, Math.min(4, item.expectedCount ?? 1)) : 1
+  const slots = Array.from({ length: expectedCount })
+
+  if (item.type === "视频") {
+    return (
+      <div className="relative flex aspect-video items-center justify-center overflow-hidden bg-gradient-to-br from-sky-100 via-cyan-50 to-teal-100">
+        <div className="absolute inset-0 animate-pulse bg-[linear-gradient(110deg,rgba(255,255,255,0)_0%,rgba(255,255,255,0.62)_45%,rgba(255,255,255,0)_70%)]" />
+        <div className="relative grid justify-items-center gap-3 text-cyan-700">
+          <Loader2 className="h-8 w-8 animate-spin" />
+          <div className="rounded-full bg-white/70 px-3 py-1 text-sm font-medium shadow-sm">{stageLabel}</div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className={cn("grid gap-0.5 bg-white p-0.5", expectedCount === 1 ? "grid-cols-1" : expectedCount === 2 ? "grid-cols-2" : "grid-cols-2")}>
+      {slots.map((_, index) => (
+        <div
+          className="relative aspect-square overflow-hidden bg-gradient-to-br from-sky-100 via-cyan-50 to-teal-100"
+          key={index}
+        >
+          <div className="absolute inset-0 animate-pulse bg-[linear-gradient(110deg,rgba(255,255,255,0)_0%,rgba(255,255,255,0.58)_45%,rgba(255,255,255,0)_70%)]" />
+          {index === 0 && (
+            <div className="absolute left-3 top-3 rounded-full bg-white/75 px-3 py-1 text-sm font-medium text-cyan-700 shadow-sm">
+              {stageLabel}
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   )
 }
@@ -1920,7 +2040,9 @@ function HistoryDetailPanel({
       </div>
 
       <div className="mt-4 overflow-hidden rounded-lg border border-slate-200 bg-white">
-        {imageUrls.length > 0 && item.type === "生图" ? (
+        {item.status === "生成中" && !item.previewUrl ? (
+          <PendingResultPreview item={item} />
+        ) : imageUrls.length > 0 && item.type === "生图" ? (
           <div className={imageUrls.length === 1 ? "grid gap-2" : "grid grid-cols-2 gap-2 bg-white p-2"}>
             {imageUrls.map((url, index) => (
               <button
@@ -1970,6 +2092,7 @@ function HistoryDetailPanel({
           </div>
         </div>
         <DetailRow label="模型" value={item.model ?? "未记录"} />
+        {item.status === "生成中" && <DetailRow label="当前阶段" value={getPendingStageLabel(item)} />}
         <DetailRow label="任务 ID" value={item.taskId ?? "示例项目无任务 ID"} />
         {item.taskError && <DetailRow label="失败原因" value={item.taskError} />}
         <DetailRow label="提示词" value={item.prompt ?? "未记录提示词"} />

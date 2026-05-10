@@ -11,12 +11,15 @@ export interface ProjectItem {
   status: ProjectStatus
   time: string
   deletedAt?: string
+  expectedCount?: number
   model?: string
   palette?: string
   prompt?: string
   imageUrls?: string[]
   previewLabel?: string
   previewUrl?: string
+  ratio?: string
+  stage?: string
   taskId?: string
   taskError?: string
 }
@@ -45,6 +48,7 @@ export function normalizeProjectItem(project: ProjectItem): ProjectItem {
 
   return {
     ...project,
+    expectedCount: normalizeExpectedCount(project.expectedCount, imageUrls.length),
     imageUrls,
     previewUrl: project.previewUrl || imageUrls[0] || "",
     status,
@@ -86,6 +90,12 @@ function normalizeImageUrls(imageUrls: unknown, previewUrl?: string) {
   return urls
 }
 
+function normalizeExpectedCount(value: unknown, fallback: number) {
+  const parsed = typeof value === "number" ? value : Number.parseInt(String(value ?? ""), 10)
+  if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 4) return parsed
+  return Math.max(1, Math.min(4, fallback || 1))
+}
+
 function mergeImageUrls(primary: ProjectItem, fallback: ProjectItem) {
   return Array.from(
     new Set([...(primary.imageUrls ?? []), ...(fallback.imageUrls ?? [])].filter((url): url is string => Boolean(url)))
@@ -105,6 +115,7 @@ export function generationJobToProjectItem(job: GenerationJob): ProjectItem {
     model: job.model,
     palette: isImage ? "from-indigo-500 via-sky-400 to-emerald-300" : "from-slate-950 via-indigo-700 to-cyan-400",
     prompt: job.prompt,
+    expectedCount: job.expected_result_count,
     imageUrls: isImage ? resultUrls : [],
     previewUrl: resultUrls[0] ?? "",
     taskId: job.id,
