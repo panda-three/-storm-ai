@@ -13,10 +13,10 @@
             "state": {
               "type": "vscode-editor",
               "state": {
-                "file": "app/api/generate/image/route.ts"
+                "file": "supabase-schema.sql"
               },
               "icon": "lucide-file",
-              "title": "route"
+              "title": "supabase-schema"
             }
           }
         ]
@@ -179,8 +179,9 @@
       "bases:新建数据库": false
     }
   },
-  "active": "8ec0b6e57e61c42e",
+  "active": "ed9d89daec125893",
   "lastOpenFiles": [
+    "app/api/generate/image/route.ts",
     "app/api/admin/users/[userId]/active-session/route.ts",
     "app/api/admin/users/[userId]/active-session",
     "components/forced-password-change.tsx",
@@ -191,7 +192,6 @@
     "app/api/admin/users/[userId]/temporary-password",
     "app/api/admin/users/[userId]",
     "app/api/admin/users/route.ts",
-    "app/api/admin/users",
     "docs/vercel-error-troubleshooting.md",
     "docs/storm-ai-conversation-index.md",
     "docs/storm-ai-conversations.md",
