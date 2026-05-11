@@ -11,9 +11,16 @@ import {
   getImageRatiosForSelection,
   imageModelOptions,
   imageModelSettings,
+  isMengfactoryGptImage2Model,
   videoModelOptions,
   videoModelSettings,
 } from "@/lib/model-options"
+import {
+  maxReferenceImageBytes,
+  maxReferenceImages,
+  supportedReferenceImageTypes,
+  type StoredReferenceImage,
+} from "@/lib/reference-images"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -103,9 +110,6 @@ const sectionMeta: Record<
   },
 }
 
-const maxReferenceImages = 4
-const maxReferenceImageBytes = 10 * 1024 * 1024
-const supportedReferenceImageTypes = ["image/jpeg", "image/png", "image/webp"]
 const imageDefaultRatioOption = "默认"
 const imageCountOptions = ["1", "2", "3", "4"]
 const imageCountDropdownOptions = [
@@ -197,6 +201,63 @@ async function getCurrentAccessToken() {
   }
 
   return token
+}
+
+async function uploadReferenceImagesForGeneration(referenceImages: ReferenceImage[], accessToken: string) {
+  if (referenceImages.length === 0) return []
+
+  const supabase = getSupabaseClient()
+  if (!supabase) {
+    throw new Error("Supabase 未配置。")
+  }
+
+  return Promise.all(
+    referenceImages.map(async (image) => {
+      const signResponse = await fetch("/api/uploads/reference-image", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: image.name,
+          size: image.size,
+          type: image.file.type,
+        }),
+      }).catch((error) => {
+        throw new Error(`参考图上传准备失败：${getErrorMessage(error, "请检查网络连接。")}`)
+      })
+      const signData = await signResponse.json().catch(() => ({}))
+
+      if (!signResponse.ok || !signData.ok) {
+        throw new Error(getErrorMessage(signData, "参考图上传准备失败。"))
+      }
+
+      const bucket = typeof signData.bucket === "string" ? signData.bucket : ""
+      const path = typeof signData.path === "string" ? signData.path : ""
+      const token = typeof signData.token === "string" ? signData.token : ""
+
+      if (!bucket || !path || !token) {
+        throw new Error("参考图上传准备失败：服务端未返回有效上传凭证。")
+      }
+
+      const { error } = await supabase.storage.from(bucket).uploadToSignedUrl(path, token, image.file, {
+        contentType: image.file.type,
+      })
+
+      if (error) {
+        throw new Error(`参考图上传失败：${error.message}`)
+      }
+
+      return {
+        bucket,
+        name: image.name,
+        path,
+        size: image.size,
+        type: image.file.type,
+      } satisfies StoredReferenceImage
+    })
+  )
 }
 
 function parseAspectRatio(ratio: string) {
@@ -947,6 +1008,7 @@ function ImageWorkspace({
     quality,
     type: "image",
   })
+  const referenceImagesDisabled = isMengfactoryGptImage2Model(model)
   const membershipCoversQuality = isMembershipActive(membershipTier, membershipExpiresAt) && membershipFreeImageQualities.includes(quality)
   const estimatedCredits = currentPricing ? (membershipCoversQuality ? 0 : calculatePricingCredits(currentPricing) * parsedImageCount) : null
 
@@ -974,6 +1036,12 @@ function ImageWorkspace({
 
   const handleReferenceImageChange = async (files: FileList | null) => {
     if (!files?.length) return
+
+    if (referenceImagesDisabled) {
+      setError("GPT-Image-2 当前仅支持文字生成图片，请切换模型后再添加参考图。")
+      if (referenceInputRef.current) referenceInputRef.current.value = ""
+      return
+    }
 
     const availableSlots = maxReferenceImages - referenceImages.length
     const selectedFiles = Array.from(files).slice(0, Math.max(availableSlots, 0))
@@ -1027,7 +1095,7 @@ function ImageWorkspace({
   const handleReferenceDragEnter = (event: DragEvent<HTMLDivElement>) => {
     if (!hasDraggedFiles(event)) return
     event.preventDefault()
-    if (!isGenerating) {
+    if (!isGenerating && !referenceImagesDisabled) {
       setIsReferenceDragActive(true)
     }
   }
@@ -1036,8 +1104,8 @@ function ImageWorkspace({
     if (!hasDraggedFiles(event)) return
     event.preventDefault()
     event.dataTransfer.dropEffect =
-      isGenerating || referenceImages.length >= maxReferenceImages ? "none" : "copy"
-    if (!isGenerating) {
+      isGenerating || referenceImagesDisabled || referenceImages.length >= maxReferenceImages ? "none" : "copy"
+    if (!isGenerating && !referenceImagesDisabled) {
       setIsReferenceDragActive(true)
     }
   }
@@ -1052,7 +1120,7 @@ function ImageWorkspace({
     event.preventDefault()
     setIsReferenceDragActive(false)
 
-    if (isGenerating) return
+    if (isGenerating || referenceImagesDisabled) return
     handleReferenceImageChange(event.dataTransfer.files)
   }
 
@@ -1083,6 +1151,11 @@ function ImageWorkspace({
 
     if (!currentPricing) {
       setError("当前模型参数未配置价格，请联系管理员配置后再生成。")
+      return
+    }
+
+    if (referenceImagesDisabled && referenceImages.length > 0) {
+      setError("GPT-Image-2 当前仅支持文字生成图片，请先移除参考图。")
       return
     }
 
@@ -1118,25 +1191,24 @@ function ImageWorkspace({
     onSectionChange("history")
 
     try {
-      const formData = new FormData()
-      formData.append("prompt", trimmedPrompt)
-      formData.append("model", model)
-      formData.append("quality", quality)
-      formData.append("imageCount", String(parsedImageCount))
-      formData.append("clientRequestId", clientRequestId)
-
-      formData.append("ratio", resolvedRatio)
-      referenceImages.forEach((image) => {
-        formData.append("referenceImages", image.file, image.name)
-      })
       const accessToken = await getCurrentAccessToken()
+      const storedReferenceImages = await uploadReferenceImagesForGeneration(referenceImages, accessToken)
 
       const response = await fetch("/api/generate/image", {
         headers: {
           Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
         },
         method: "POST",
-        body: formData,
+        body: JSON.stringify({
+          prompt: trimmedPrompt,
+          model,
+          quality,
+          imageCount: parsedImageCount,
+          clientRequestId,
+          ratio: resolvedRatio,
+          referenceImages: storedReferenceImages,
+        }),
       }).catch((error) => {
         throw new Error(`生图接口请求失败：${getErrorMessage(error, "请检查本地服务或网络连接。")}`)
       })
@@ -1233,9 +1305,9 @@ function ImageWorkspace({
                 type="file"
               />
               <UploadColumn
-                disabled={isGenerating || referenceImages.length >= maxReferenceImages}
+                disabled={isGenerating || referenceImagesDisabled || referenceImages.length >= maxReferenceImages}
                 isActive={isReferenceDragActive}
-                label="添加参考图"
+                label={referenceImagesDisabled ? "仅文字生图" : "添加参考图"}
                 onClick={() => referenceInputRef.current?.click()}
                 referenceImages={referenceImages}
                 onRemove={handleReferenceImageRemove}
@@ -1266,6 +1338,11 @@ function ImageWorkspace({
                         setModel(value)
                         setQuality(settings.qualities[1] ?? settings.qualities[0])
                         setRatio(settings.ratios[0])
+                        if (isMengfactoryGptImage2Model(value) && referenceImages.length > 0) {
+                          setError("GPT-Image-2 当前仅支持文字生成图片，请先移除参考图。")
+                        } else if (error === "GPT-Image-2 当前仅支持文字生成图片，请先移除参考图。") {
+                          setError("")
+                        }
                       }}
                       options={imageModelOptions.map((option) => ({
                         label: getOptionLabel(option),
@@ -1305,7 +1382,7 @@ function ImageWorkspace({
                   <button
                     aria-label={isGenerating ? "生成中" : "生成图片"}
                     className="inline-flex h-12 min-w-12 cursor-pointer items-center justify-center gap-2 rounded-full bg-slate-950 px-4 text-sm font-semibold text-white transition-colors hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/60 disabled:cursor-not-allowed disabled:opacity-50 sm:px-5"
-                    disabled={isGenerating || !billingReady || !currentPricing}
+                    disabled={isGenerating || !billingReady || !currentPricing || (referenceImagesDisabled && referenceImages.length > 0)}
                     onClick={handleGenerate}
                     type="button"
                   >

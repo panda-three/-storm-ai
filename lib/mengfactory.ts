@@ -1,8 +1,10 @@
 import {
   getMengfactoryVeoVideoApiModel,
   isMengfactoryGeminiImageModel,
+  isMengfactoryGptImage2Model,
   isMengfactoryVeoVideoModel,
   mengfactoryGeminiImageApiModelName,
+  mengfactoryGptImage2ApiModelName,
 } from "@/lib/model-options"
 import type { GenerationResponse, NormalizedTaskStatus } from "@/lib/apimart"
 
@@ -24,6 +26,19 @@ export interface MengfactoryImageRequest {
 export interface MengfactoryGeneratedImage {
   buffer: Buffer
   mimeType: string
+}
+
+export interface MengfactoryGptImageRequest {
+  imageCount: number
+  model: string
+  prompt: string
+  ratio: string
+}
+
+export interface MengfactoryGptGeneratedImage {
+  buffer?: Buffer
+  mimeType: string
+  url?: string
 }
 
 export interface MengfactoryVideoRequest {
@@ -115,6 +130,41 @@ export async function createMengfactoryImage(request: MengfactoryImageRequest): 
     mimeType: image.mimeType,
   })
   return image
+}
+
+export async function createMengfactoryGptImage(
+  request: MengfactoryGptImageRequest
+): Promise<MengfactoryGptGeneratedImage[]> {
+  if (!isMengfactoryGptImage2Model(request.model)) {
+    throw new Error("请选择有效的 MengFactory GPT 生图模型。")
+  }
+
+  const imageCount = normalizeMengfactoryGptImageCount(request.imageCount)
+  const payload = {
+    model: mengfactoryGptImage2ApiModelName,
+    prompt: request.prompt,
+    size: normalizeMengfactoryGptImageSize(request.ratio),
+    n: imageCount,
+  }
+
+  logMengfactory("gpt image input", payload)
+
+  const data = await mengfactoryJsonRequest("/v1/images/generations", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+  const images = extractMengfactoryGptGeneratedImages(data).slice(0, imageCount)
+
+  if (images.length === 0) {
+    throw new Error("MengFactory 已返回结果，但没有找到生成图片。")
+  }
+
+  logMengfactory("gpt image output", {
+    imageCount: images.length,
+    urlCount: images.filter((image) => image.url).length,
+    bufferCount: images.filter((image) => image.buffer).length,
+  })
+  return images
 }
 
 export async function createMengfactoryVideo(request: MengfactoryVideoRequest): Promise<GenerationResponse> {
@@ -249,6 +299,128 @@ function extractFirstGeneratedImage(value: unknown): MengfactoryGeneratedImage {
     buffer: Buffer.from(data, "base64"),
     mimeType,
   }
+}
+
+function extractMengfactoryGptGeneratedImages(value: unknown): MengfactoryGptGeneratedImage[] {
+  const images: MengfactoryGptGeneratedImage[] = []
+  const seen = new Set<string>()
+  collectMengfactoryGptGeneratedImages(value, images, seen)
+  return images
+}
+
+function collectMengfactoryGptGeneratedImages(
+  value: unknown,
+  images: MengfactoryGptGeneratedImage[],
+  seen: Set<string>
+) {
+  if (!value) return
+
+  if (typeof value === "string") {
+    if (value.startsWith("http://") || value.startsWith("https://")) {
+      addGeneratedImage(images, seen, {
+        mimeType: inferImageMimeType(value),
+        url: value,
+      })
+      return
+    }
+
+    const decoded = decodeBase64Image(value)
+    if (decoded) {
+      addGeneratedImage(images, seen, decoded)
+    }
+    return
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectMengfactoryGptGeneratedImages(item, images, seen))
+    return
+  }
+
+  if (typeof value !== "object") return
+
+  const record = value as Record<string, unknown>
+  for (const key of ["url", "image_url", "imageUrl"]) {
+    const url = record[key]
+    if (typeof url === "string" && (url.startsWith("http://") || url.startsWith("https://"))) {
+      addGeneratedImage(images, seen, {
+        mimeType: inferImageMimeType(url),
+        url,
+      })
+    }
+  }
+
+  for (const key of ["b64_json", "b64Json", "base64", "image", "data"]) {
+    const encoded = record[key]
+    if (typeof encoded === "string") {
+      const decoded = decodeBase64Image(encoded)
+      if (decoded) {
+        addGeneratedImage(images, seen, decoded)
+      }
+    }
+  }
+
+  Object.values(record).forEach((nested) => collectMengfactoryGptGeneratedImages(nested, images, seen))
+}
+
+function addGeneratedImage(
+  images: MengfactoryGptGeneratedImage[],
+  seen: Set<string>,
+  image: MengfactoryGptGeneratedImage
+) {
+  const key = image.url ?? `${image.mimeType}:${image.buffer?.byteLength ?? 0}:${image.buffer?.subarray(0, 24).toString("base64") ?? ""}`
+  if (seen.has(key)) return
+  seen.add(key)
+  images.push(image)
+}
+
+function decodeBase64Image(value: string): MengfactoryGptGeneratedImage | null {
+  const match = value.match(/^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i)
+  const mimeType = match?.[1]?.toLowerCase() ?? "image/png"
+  const encoded = match?.[2] ?? value
+
+  if (!looksLikeBase64(encoded)) return null
+
+  try {
+    const buffer = Buffer.from(encoded, "base64")
+    if (buffer.byteLength === 0) return null
+    return {
+      buffer,
+      mimeType,
+    }
+  } catch {
+    return null
+  }
+}
+
+function looksLikeBase64(value: string) {
+  const normalized = value.trim()
+  return normalized.length >= 64 && normalized.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/.test(normalized)
+}
+
+function inferImageMimeType(url: string) {
+  const pathname = url.split("?")[0].toLowerCase()
+  if (pathname.endsWith(".webp")) return "image/webp"
+  if (pathname.endsWith(".jpg") || pathname.endsWith(".jpeg")) return "image/jpeg"
+  if (pathname.endsWith(".gif")) return "image/gif"
+  if (pathname.endsWith(".avif")) return "image/avif"
+  return "image/png"
+}
+
+function normalizeMengfactoryGptImageCount(value: number) {
+  return Number.isInteger(value) && value >= 1 && value <= 4 ? value : 1
+}
+
+export function normalizeMengfactoryGptImageSize(ratio: string) {
+  const value = ratio.trim().toLowerCase()
+  if (value === "auto") return "auto"
+  if (value === "1:1") return "1024x1024"
+
+  const [width, height] = value.split(":").map(Number)
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return "auto"
+  }
+
+  return width >= height ? "1536x1024" : "1024x1536"
 }
 
 function findInlineData(value: unknown): GeminiInlineData | null {

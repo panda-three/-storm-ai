@@ -552,7 +552,7 @@ export function normalizeJobTaskStatus(job: GenerationJob): NormalizedTaskStatus
 
   return {
     ok: true,
-    mode: job.provider === "mock" ? "mock" : "apimart",
+    mode: job.provider === "mengfactory" ? "mengfactory" : job.provider === "mock" ? "mock" : "apimart",
     taskId: job.id,
     status: job.status,
     progress: isTerminalGenerationJobStatus(job.status) ? 100 : 0,

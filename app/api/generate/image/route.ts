@@ -8,7 +8,12 @@ import {
   type GenerationJobStatus,
 } from "@/lib/generation-jobs"
 import { createImageGeneration, normalizeImageResolution, uploadApimartImage } from "@/lib/apimart"
-import { createMengfactoryImage } from "@/lib/mengfactory"
+import {
+  createMengfactoryGptImage,
+  createMengfactoryImage,
+  type MengfactoryGeneratedImage,
+  type MengfactoryGptGeneratedImage,
+} from "@/lib/mengfactory"
 import {
   calculatePricingCredits,
   type ModelPricing,
@@ -17,6 +22,7 @@ import {
   getSupabaseServerClient,
   describeServerError,
   deleteGeneratedImageByPublicUrl,
+  persistRemoteGeneratedImage,
   refundGenerationCredits,
   requireAuthenticatedUser,
   uploadGeneratedImage,
@@ -24,12 +30,27 @@ import {
 import {
   gptImage2Supported4KRatios,
   isMengfactoryGeminiImageModel,
+  isMengfactoryGptImage2Model,
+  isMengfactoryImageModel,
   isValidImageRatioForQuality,
 } from "@/lib/model-options"
+import {
+  getReferenceImageBucket,
+  getReferenceImagePathPrefix,
+  maxReferenceImages,
+  type StoredReferenceImage,
+  validateReferenceImageMetadata,
+} from "@/lib/reference-images"
 
-const maxReferenceImages = 4
-const maxReferenceImageBytes = 10 * 1024 * 1024
-const supportedReferenceImageTypes = ["image/jpeg", "image/png", "image/webp"]
+type MengfactoryImageResult = MengfactoryGeneratedImage | MengfactoryGptGeneratedImage
+
+interface PreparedReferenceImage {
+  buffer: Buffer
+  mimeType: string
+  name: string
+  path?: string
+  bucket?: string
+}
 
 export async function POST(request: Request) {
   let billingReason = ""
@@ -38,6 +59,7 @@ export async function POST(request: Request) {
   let stage = "authenticate"
   let upstreamTaskId = ""
   let userId = ""
+  let preparedReferenceImages: PreparedReferenceImage[] = []
 
   try {
     const auth = await requireAuthenticatedUser(request)
@@ -57,7 +79,8 @@ export async function POST(request: Request) {
     const ratio = String(getValue("ratio") ?? "1:1")
     const imageCount = parseImageCount(getValue("imageCount"))
     clientRequestId = String(getValue("clientRequestId") ?? "").trim()
-    const referenceImages = body instanceof FormData ? body.getAll("referenceImages").filter(isImageFile) : []
+    const referenceFiles = body instanceof FormData ? body.getAll("referenceImages").filter(isImageFile) : []
+    const storedReferenceImages = body instanceof FormData ? [] : parseStoredReferenceImages(getValue("referenceImages"))
 
     if (!isValidImageRatioForQuality(model, quality, ratio)) {
       return NextResponse.json(
@@ -70,7 +93,22 @@ export async function POST(request: Request) {
     }
 
     stage = "validate_reference_images"
-    validateReferenceImages(referenceImages)
+    validateReferenceFiles(referenceFiles)
+    validateStoredReferenceImages(storedReferenceImages, userId)
+
+    if (referenceFiles.length > 0 && storedReferenceImages.length > 0) {
+      return NextResponse.json(
+        { ok: false, error: "请不要同时提交参考图文件和参考图存储地址。" },
+        { status: 400 }
+      )
+    }
+
+    if (isMengfactoryGptImage2Model(model) && (referenceFiles.length > 0 || storedReferenceImages.length > 0)) {
+      return NextResponse.json(
+        { ok: false, error: "GPT-Image-2 当前仅支持文字生成图片，请先移除参考图。" },
+        { status: 400 }
+      )
+    }
 
     stage = "load_pricing"
     const pricing = await loadImagePricing({ model, quality })
@@ -95,7 +133,14 @@ export async function POST(request: Request) {
       ratio,
       imageCount,
       clientRequestId,
-      referenceImages: referenceImages.map(toFileLog),
+      referenceImages: [
+        ...referenceFiles.map(toFileLog),
+        ...storedReferenceImages.map((image) => ({
+          path: image.path,
+          size: image.size,
+          type: image.type,
+        })),
+      ],
       userId: maskId(userId),
     })
 
@@ -105,16 +150,22 @@ export async function POST(request: Request) {
       billingReason = `${billingReason} · 会员免费`
     }
 
-    const isMengfactoryImage = isMengfactoryGeminiImageModel(model)
+    const isMengfactoryImage = isMengfactoryImageModel(model)
     const provider = isMengfactoryImage ? "mengfactory" : "apimart"
-    const referenceBuffers = isMengfactoryImage
-      ? await prepareMengfactoryReferenceImages(referenceImages, () => {
+    stage = "prepare_reference_images"
+    preparedReferenceImages = await prepareReferenceImages({
+      referenceFiles,
+      storedReferenceImages,
+      userId,
+    })
+    const referenceBuffers = isMengfactoryGeminiImageModel(model)
+      ? await prepareMengfactoryReferenceImages(preparedReferenceImages, () => {
           stage = "prepare_mengfactory_references"
         })
       : []
     const apimartReferenceImageUrls = isMengfactoryImage
       ? []
-      : await uploadApimartReferenceImages(referenceImages, () => {
+      : await uploadApimartReferenceImages(preparedReferenceImages, () => {
           stage = "upload_apimart_references"
         })
 
@@ -136,31 +187,49 @@ export async function POST(request: Request) {
 
     if (isMengfactoryImage) {
       stage = "submit_mengfactory_generation"
-      const generatedImages = await Promise.allSettled(
-        Array.from({ length: imageCount }, () =>
-          createMengfactoryImage({
+      const generatedImages: PromiseSettledResult<MengfactoryImageResult>[] = isMengfactoryGptImage2Model(model)
+        ? await createMengfactoryGptImage({
+            imageCount,
             model,
             prompt,
-            quality,
             ratio,
-            referenceImages: referenceBuffers,
           })
-        )
-      )
+            .then((images) => images.map((image) => ({ status: "fulfilled" as const, value: image })))
+            .catch((error) =>
+              Array.from({ length: imageCount }, () => ({
+                reason: error,
+                status: "rejected" as const,
+              }))
+            )
+        : await Promise.allSettled(
+            Array.from({ length: imageCount }, () =>
+              createMengfactoryImage({
+                model,
+                prompt,
+                quality,
+                ratio,
+                referenceImages: referenceBuffers,
+              })
+            )
+          )
       const successfulImages = generatedImages
-        .filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof createMengfactoryImage>>> => result.status === "fulfilled")
+        .filter((result): result is PromiseFulfilledResult<MengfactoryImageResult> => result.status === "fulfilled")
         .map((result) => result.value)
       const imageUrls: string[] = []
 
       try {
         stage = "persist_mengfactory_results"
         for (const generated of successfulImages) {
-          const uploaded = await uploadGeneratedImage({
-            buffer: generated.buffer,
-            contentType: generated.mimeType,
-            userId,
-          })
-          imageUrls.push(uploaded.publicUrl)
+          if ("url" in generated && generated.url) {
+            imageUrls.push(await persistRemoteGeneratedImage({ sourceUrl: generated.url, userId }))
+          } else if (generated.buffer) {
+            const uploaded = await uploadGeneratedImage({
+              buffer: generated.buffer,
+              contentType: generated.mimeType,
+              userId,
+            })
+            imageUrls.push(uploaded.publicUrl)
+          }
         }
 
         if (imageUrls.length === 0) {
@@ -301,6 +370,8 @@ export async function POST(request: Request) {
       },
       { status: message.includes("登录") ? 401 : 500 }
     )
+  } finally {
+    await cleanupStoredReferenceImages(preparedReferenceImages)
   }
 }
 
@@ -344,28 +415,26 @@ function buildPartialImageMessage({
     .join(" ")
 }
 
-async function prepareMengfactoryReferenceImages(referenceImages: File[], setStage: () => void) {
+async function prepareMengfactoryReferenceImages(referenceImages: PreparedReferenceImage[], setStage: () => void) {
   if (referenceImages.length === 0) return []
 
   setStage()
-  return Promise.all(
-    referenceImages.map(async (image) => ({
-      buffer: Buffer.from(await image.arrayBuffer()),
-      mimeType: image.type,
-    }))
-  )
+  return referenceImages.map((image) => ({
+    buffer: image.buffer,
+    mimeType: image.mimeType,
+  }))
 }
 
-async function uploadApimartReferenceImages(referenceImages: File[], setStage: () => void) {
+async function uploadApimartReferenceImages(referenceImages: PreparedReferenceImage[], setStage: () => void) {
   if (referenceImages.length === 0) return []
 
   setStage()
   const urls = await Promise.all(
     referenceImages.map(async (image) =>
       uploadApimartImage({
-        buffer: Buffer.from(await image.arrayBuffer()),
+        buffer: image.buffer,
         filename: image.name,
-        mimeType: image.type,
+        mimeType: image.mimeType,
       })
     )
   )
@@ -495,20 +564,121 @@ async function hasActiveImageMembership({ quality, userId }: { quality: string; 
   )
 }
 
-function validateReferenceImages(referenceImages: File[]) {
+function parseStoredReferenceImages(value: unknown): StoredReferenceImage[] {
+  if (!Array.isArray(value)) return []
+
+  return value.map((item) => {
+    const record = item && typeof item === "object" ? item as Record<string, unknown> : {}
+
+    return {
+      bucket: String(record.bucket ?? ""),
+      name: String(record.name ?? "reference-image"),
+      path: String(record.path ?? ""),
+      size: Number(record.size),
+      type: String(record.type ?? ""),
+    }
+  })
+}
+
+function validateReferenceFiles(referenceImages: File[]) {
   if (referenceImages.length > maxReferenceImages) {
     throw new Error(`参考图最多上传 ${maxReferenceImages} 张。`)
   }
 
   for (const image of referenceImages) {
-    if (!supportedReferenceImageTypes.includes(image.type)) {
-      throw new Error("参考图仅支持 JPG、PNG、WebP 格式。")
+    validateReferenceImageMetadata({ size: image.size, type: image.type })
+  }
+}
+
+function validateStoredReferenceImages(referenceImages: StoredReferenceImage[], userId: string) {
+  if (referenceImages.length > maxReferenceImages) {
+    throw new Error(`参考图最多上传 ${maxReferenceImages} 张。`)
+  }
+
+  const expectedBucket = getReferenceImageBucket()
+  const expectedPrefix = getReferenceImagePathPrefix(userId)
+
+  for (const image of referenceImages) {
+    validateReferenceImageMetadata({ size: image.size, type: image.type })
+
+    if (image.bucket !== expectedBucket) {
+      throw new Error("参考图存储位置无效。")
     }
 
-    if (image.size > maxReferenceImageBytes) {
-      throw new Error("单张参考图不能超过 10MB。")
+    if (!image.path || !image.path.startsWith(expectedPrefix) || image.path.includes("..")) {
+      throw new Error("参考图路径无效。")
     }
   }
+}
+
+async function prepareReferenceImages({
+  referenceFiles,
+  storedReferenceImages,
+  userId,
+}: {
+  referenceFiles: File[]
+  storedReferenceImages: StoredReferenceImage[]
+  userId: string
+}): Promise<PreparedReferenceImage[]> {
+  if (referenceFiles.length > 0) {
+    return Promise.all(
+      referenceFiles.map(async (image) => ({
+        buffer: Buffer.from(await image.arrayBuffer()),
+        mimeType: image.type,
+        name: image.name,
+      }))
+    )
+  }
+
+  if (storedReferenceImages.length === 0) return []
+
+  validateStoredReferenceImages(storedReferenceImages, userId)
+  const supabase = getSupabaseServerClient()
+
+  return Promise.all(
+    storedReferenceImages.map(async (image) => {
+      const { data, error } = await supabase.storage.from(image.bucket).download(image.path)
+
+      if (error) {
+        throw new Error(describeServerError(error, "读取参考图失败。"), { cause: error })
+      }
+
+      const buffer = Buffer.from(await data.arrayBuffer())
+      validateReferenceImageMetadata({ size: buffer.byteLength, type: image.type })
+
+      return {
+        bucket: image.bucket,
+        buffer,
+        mimeType: image.type,
+        name: image.name,
+        path: image.path,
+      }
+    })
+  )
+}
+
+async function cleanupStoredReferenceImages(referenceImages: PreparedReferenceImage[]) {
+  const storedImages = referenceImages.filter((image) => image.bucket && image.path)
+  if (storedImages.length === 0) return
+
+  const pathsByBucket = new Map<string, string[]>()
+  storedImages.forEach((image) => {
+    if (!image.bucket || !image.path) return
+    pathsByBucket.set(image.bucket, [...(pathsByBucket.get(image.bucket) ?? []), image.path])
+  })
+
+  await Promise.all(
+    Array.from(pathsByBucket.entries()).map(async ([bucket, paths]) => {
+      const { error } = await getSupabaseServerClient().storage.from(bucket).remove(paths)
+      if (error) {
+        console.warn("[Supabase Storage] reference image cleanup failed", {
+          bucket,
+          error: describeServerError(error, "清理参考图失败。"),
+          paths,
+        })
+      }
+    })
+  )
 }
 
 function isImageFile(value: FormDataEntryValue): value is File {

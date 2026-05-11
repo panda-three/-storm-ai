@@ -45,4 +45,12 @@ export default tseslint.config(
       "@typescript-eslint/no-unused-vars": ["error", { "varsIgnorePattern": "^actionTypes$" }],
     },
   },
+  {
+    files: ["**/*.cjs"],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+    },
+  },
 )
