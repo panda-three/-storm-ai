@@ -1,5 +1,5 @@
 import { getSupabaseServerClient } from "@/lib/server-supabase"
-import { describeServerError } from "@/lib/server-supabase"
+import { deleteGeneratedImageByPublicUrl, describeServerError, getGeneratedStorageObjectPath } from "@/lib/server-supabase"
 import { getTaskStatus, type GenerationKind, type NormalizedTaskStatus } from "@/lib/apimart"
 import { getMengfactoryVideoTaskStatus } from "@/lib/mengfactory"
 
@@ -9,11 +9,14 @@ export const generationTimeoutMessage = "生成任务超时未完成，系统已
 export const synchronousImageOrphanTimeoutMs = 10 * 60 * 1000
 export const asyncImageTimeoutMs = 20 * 60 * 1000
 export const asyncVideoTimeoutMs = 60 * 60 * 1000
+export const generationHistoryRetentionHours = 24
+export const generationHistoryRetentionMs = generationHistoryRetentionHours * 60 * 60 * 1000
 
 export interface GenerationJob {
   id: string
   amount: number
   check_attempts: number
+  client_request_id: string | null
   completed_at: string | null
   created_at: string
   last_checked_at: string | null
@@ -21,11 +24,13 @@ export interface GenerationJob {
   model: string
   next_check_at: string | null
   expected_result_count: number
+  expires_at: string | null
   prompt: string
   provider: string
   reference: string
   result_urls: string[]
   status: GenerationJobStatus
+  storage_urls: string[]
   sync_locked_until: string | null
   task_error: string | null
   type: GenerationKind
@@ -34,9 +39,13 @@ export interface GenerationJob {
 }
 
 const generationJobSelect =
-  "id, amount, check_attempts, completed_at, created_at, expected_result_count, last_checked_at, last_sync_error, model, next_check_at, prompt, provider, reference, result_urls, status, sync_locked_until, task_error, type, upstream_task_id, user_id"
+  "id, amount, check_attempts, client_request_id, completed_at, created_at, expected_result_count, expires_at, last_checked_at, last_sync_error, model, next_check_at, prompt, provider, reference, result_urls, status, storage_urls, sync_locked_until, task_error, type, upstream_task_id, user_id"
 const legacyGenerationJobSelect =
   "id, amount, created_at, model, prompt, provider, reference, result_urls, status, task_error, type, upstream_task_id, user_id"
+
+export function getGenerationJobExpiresAt(completedAt = new Date().toISOString()) {
+  return new Date(Date.parse(completedAt) + generationHistoryRetentionMs).toISOString()
+}
 
 export async function createGenerationJob({
   amount,
@@ -47,8 +56,10 @@ export async function createGenerationJob({
   reference,
   type,
   userId,
+  clientRequestId,
 }: {
   amount: number
+  clientRequestId?: string
   expectedResultCount?: number
   model: string
   prompt: string
@@ -61,6 +72,7 @@ export async function createGenerationJob({
     .from("generation_jobs")
     .insert({
       amount,
+      client_request_id: clientRequestId || null,
       expected_result_count: expectedResultCount,
       model,
       prompt,
@@ -90,8 +102,10 @@ export async function createGenerationJobWithBilling({
   reference,
   type,
   userId,
+  clientRequestId,
 }: {
   amount: number
+  clientRequestId?: string
   expectedResultCount?: number
   isFree?: boolean
   model: string
@@ -104,6 +118,7 @@ export async function createGenerationJobWithBilling({
 }) {
   const { data, error } = await getSupabaseServerClient().rpc("create_generation_job_with_billing", {
     p_amount: amount,
+    p_client_request_id: clientRequestId || null,
     p_expected_result_count: expectedResultCount,
     p_is_free: isFree,
     p_model: model,
@@ -128,11 +143,13 @@ export async function updateGenerationJob(
       GenerationJob,
       | "check_attempts"
       | "completed_at"
+      | "expires_at"
       | "last_checked_at"
       | "last_sync_error"
       | "next_check_at"
       | "result_urls"
       | "status"
+      | "storage_urls"
       | "sync_locked_until"
       | "task_error"
       | "upstream_task_id"
@@ -162,11 +179,13 @@ export async function updateActiveGenerationJob(
       GenerationJob,
       | "check_attempts"
       | "completed_at"
+      | "expires_at"
       | "last_checked_at"
       | "last_sync_error"
       | "next_check_at"
       | "result_urls"
       | "status"
+      | "storage_urls"
       | "sync_locked_until"
       | "task_error"
       | "upstream_task_id"
@@ -229,7 +248,7 @@ export async function loadGenerationJobForUser({
   if (error) {
     throw new Error(describeServerError(error, "读取生成任务失败。"), { cause: error })
   }
-  return data as GenerationJob | null
+  return isExpiredGenerationJob(data as GenerationJob | null) ? null : (data as GenerationJob | null)
 }
 
 function isUuid(value: string) {
@@ -253,7 +272,7 @@ export async function loadGenerationJobByUpstreamTaskForUser({
   if (error) {
     throw new Error(describeServerError(error, "读取上游生成任务失败。"), { cause: error })
   }
-  return data as GenerationJob | null
+  return isExpiredGenerationJob(data as GenerationJob | null) ? null : (data as GenerationJob | null)
 }
 
 export async function loadGenerationJobsForUser({
@@ -268,6 +287,7 @@ export async function loadGenerationJobsForUser({
     .from("generation_jobs")
     .select(generationJobSelect)
     .eq("user_id", userId)
+    .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
     .order("created_at", { ascending: false })
     .limit(limit)
 
@@ -287,7 +307,7 @@ export async function loadGenerationJobsForUser({
 
     throw new Error(describeServerError(error, "读取生成历史失败。"), { cause: error })
   }
-  return (data ?? []) as GenerationJob[]
+  return ((data ?? []) as GenerationJob[]).filter((job) => !isExpiredGenerationJob(job))
 }
 
 export async function recoverStaleGenerationJobsForUser({
@@ -305,11 +325,14 @@ export async function recoverStaleGenerationJobsForUser({
 function withDefaultSyncFields(job: Partial<GenerationJob>): GenerationJob {
   return {
     check_attempts: 0,
+    client_request_id: null,
     completed_at: null,
     expected_result_count: 1,
+    expires_at: null,
     last_checked_at: null,
     last_sync_error: null,
     next_check_at: null,
+    storage_urls: [],
     sync_locked_until: null,
     ...job,
   } as GenerationJob
@@ -324,6 +347,8 @@ function isMissingSyncColumnError(error: unknown) {
     message.includes("last_sync_error") ||
     message.includes("next_check_at") ||
     message.includes("expected_result_count") ||
+    message.includes("expires_at") ||
+    message.includes("storage_urls") ||
     message.includes("sync_locked_until")
   )
 }
@@ -415,8 +440,10 @@ export async function recoverStaleGenerationJob(job: GenerationJob) {
       return failGenerationJobWithRefund({ jobId: job.id, reason: taskError || `AI 生成失败退款 · ${job.model}` })
     }
 
+    const completedAt = job.completed_at ?? new Date().toISOString()
     const nextJob = await updateActiveGenerationJob(job.id, {
-      completed_at: job.completed_at ?? new Date().toISOString(),
+      completed_at: completedAt,
+      expires_at: job.expires_at ?? getGenerationJobExpiresAt(completedAt),
       last_checked_at: new Date().toISOString(),
       last_sync_error: null,
       next_check_at: new Date().toISOString(),
@@ -480,6 +507,90 @@ export function normalizeJobTaskStatus(job: GenerationJob): NormalizedTaskStatus
 
 export function isTerminalGenerationJobStatus(status: GenerationJobStatus) {
   return status === "completed" || status === "failed" || status === "partial_completed"
+}
+
+export function isExpiredGenerationJob(job: GenerationJob | null) {
+  if (!job?.expires_at || !isTerminalGenerationJobStatus(job.status)) return false
+  return Date.parse(job.expires_at) <= Date.now()
+}
+
+export async function deleteGenerationJobAndStoredAssets(job: GenerationJob) {
+  const urls = getStorageCleanupUrls(job)
+  const results = await Promise.allSettled(urls.map((url) => deleteGeneratedImageByPublicUrl(url)))
+  const failed = results.filter((result) => result.status === "rejected")
+
+  if (failed.length > 0) {
+    throw new Error(`清理 ${failed.length}/${urls.length} 个生成文件失败。`)
+  }
+
+  const { error } = await getSupabaseServerClient().from("generation_jobs").delete().eq("id", job.id)
+  if (error) {
+    throw new Error(describeServerError(error, "删除生成历史失败。"), { cause: error })
+  }
+}
+
+export async function deleteGenerationJobForUser({
+  taskId,
+  userId,
+}: {
+  taskId: string
+  userId: string
+}) {
+  const job = await loadGenerationJobForUser({ taskId, userId })
+  if (!job) return false
+
+  await deleteGenerationJobAndStoredAssets(job)
+  return true
+}
+
+export async function cleanupExpiredGenerationJobs({ limit = 50 } = {}) {
+  const now = new Date().toISOString()
+  const { data, error } = await getSupabaseServerClient()
+    .from("generation_jobs")
+    .select(generationJobSelect)
+    .in("status", ["completed", "failed", "partial_completed"])
+    .lte("expires_at", now)
+    .order("expires_at", { ascending: true })
+    .limit(limit)
+
+  if (error) {
+    if (isMissingSyncColumnError(error)) {
+      return {
+        checked: 0,
+        deleted: 0,
+        errors: 0,
+        skipped: 0,
+      }
+    }
+
+    throw new Error(describeServerError(error, "读取过期生成历史失败。"), { cause: error })
+  }
+
+  const jobs = (data ?? []) as GenerationJob[]
+  const results = await Promise.allSettled(jobs.map(deleteGenerationJobAndStoredAssets))
+
+  return results.reduce(
+    (current, result) => {
+      if (result.status === "fulfilled") {
+        current.deleted += 1
+      } else {
+        current.errors += 1
+      }
+      return current
+    },
+    {
+      checked: jobs.length,
+      deleted: 0,
+      errors: 0,
+      skipped: 0,
+    }
+  )
+}
+
+function getStorageCleanupUrls(job: GenerationJob) {
+  return Array.from(new Set([...(job.storage_urls ?? []), ...(job.result_urls ?? [])])).filter((url) =>
+    getGeneratedStorageObjectPath(url)
+  )
 }
 
 function summarizeRecoveryResults(checked: number, results: Array<PromiseSettledResult<GenerationJob>>) {

@@ -1,6 +1,7 @@
 import { getTaskStatus, isApimartRateLimitError } from "@/lib/apimart"
 import {
   failGenerationJobWithRefund,
+  getGenerationJobExpiresAt,
   isTerminalGenerationJobStatus,
   lockGenerationJobForSync,
   updateActiveGenerationJob,
@@ -83,14 +84,23 @@ export async function syncApimartGenerationJob(job: GenerationJob): Promise<Sync
 
     try {
       const now = new Date().toISOString()
+      const completedAt = isTerminalGenerationJobStatus(status) ? lockedJob.completed_at ?? now : lockedJob.completed_at
       const updatedJob = await updateActiveGenerationJob(lockedJob.id, {
         check_attempts: 0,
-        completed_at: isTerminalGenerationJobStatus(status) ? lockedJob.completed_at ?? now : lockedJob.completed_at,
+        completed_at: completedAt,
+        expires_at:
+          isTerminalGenerationJobStatus(status) && completedAt
+            ? lockedJob.expires_at ?? getGenerationJobExpiresAt(completedAt)
+            : lockedJob.expires_at,
         last_checked_at: now,
         last_sync_error: null,
         next_check_at: isTerminalGenerationJobStatus(status) ? now : getNextCheckAt(0),
         result_urls: storedResultUrls.length > 0 ? storedResultUrls : lockedJob.result_urls,
         status,
+        storage_urls:
+          result.status === "completed" && lockedJob.type === "image" && !result.mode.includes("mock") && storedResultUrls.length > 0
+            ? Array.from(new Set([...(lockedJob.storage_urls ?? []), ...storedResultUrls]))
+            : lockedJob.storage_urls,
         sync_locked_until: null,
         task_error: taskError || null,
       })

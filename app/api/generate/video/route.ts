@@ -44,6 +44,7 @@ export async function POST(request: Request) {
     const duration = String(getValue("duration") ?? "5 秒")
     const quality = String(getValue("quality") ?? "720P")
     const aspectRatio = String(getValue("aspectRatio") ?? "16:9")
+    const clientRequestId = String(getValue("clientRequestId") ?? "").trim()
     const rawReferenceImages = body instanceof FormData ? getReferenceImageLogs(body) : []
     const modelSettings = videoModelSettings[model]
 
@@ -79,12 +80,14 @@ export async function POST(request: Request) {
       duration,
       quality,
       aspectRatio,
+      clientRequestId,
       referenceImages: rawReferenceImages,
       userId: maskId(userId),
     })
 
     const job = await createGenerationJobWithBilling({
       amount: billingAmount,
+      clientRequestId,
       model,
       prompt,
       provider: isMengfactoryVeoVideoModel(model) ? "mengfactory" : "apimart",
@@ -112,6 +115,7 @@ export async function POST(request: Request) {
       const nextJob = await updateActiveGenerationJob(job.id, {
         next_check_at: new Date(Date.now() + 5000).toISOString(),
         status: result.status === "submitted" ? "submitted" : "processing",
+        storage_urls: imageUrls,
         upstream_task_id: result.taskId,
       })
 
@@ -123,6 +127,7 @@ export async function POST(request: Request) {
 
       return NextResponse.json({
         ...result,
+        clientRequestId,
         taskId: job.id,
         upstreamTaskId: result.taskId,
       })
@@ -159,6 +164,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       ...result,
+      clientRequestId,
       taskId: job.id,
       upstreamTaskId: result.taskId,
     })
@@ -244,7 +250,7 @@ async function uploadReferenceImagesToPublicUrls(referenceImages: File[], userId
         userId,
       })
 
-      return uploadedUrl
+      return uploadedUrl.publicUrl
     })
   )
 }

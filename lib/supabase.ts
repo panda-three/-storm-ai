@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import type { LocalAccountData, MembershipTier } from "@/lib/local-store"
+import { isDeletedProjectItem } from "@/lib/project-history"
 
 export type PackageType = "credits" | "membership"
 
@@ -150,7 +151,7 @@ export async function saveSupabaseAccount(account: LocalAccountData) {
   if (!supabase) return
 
   const { error } = await supabase.rpc("save_user_projects", {
-    p_projects: account.projects,
+    p_projects: account.projects.filter((project) => isDeletedProjectItem(project) || !project.taskId || project.id.startsWith("pending-")),
   })
 
   if (error) throw error

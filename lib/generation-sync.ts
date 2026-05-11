@@ -1,5 +1,5 @@
 import { syncApimartGenerationJob } from "@/lib/apimart-task-sync"
-import { loadDueApimartGenerationJobs, recoverStaleGenerationJobs } from "@/lib/generation-jobs"
+import { cleanupExpiredGenerationJobs, loadDueApimartGenerationJobs, recoverStaleGenerationJobs } from "@/lib/generation-jobs"
 
 export async function syncGenerationJobs({ limit = 20 } = {}) {
   const jobs = await loadDueApimartGenerationJobs({ limit })
@@ -23,9 +23,11 @@ export async function syncGenerationJobs({ limit = 20 } = {}) {
     }
   )
   const stale = await recoverStaleGenerationJobs({ limit })
+  const cleanup = await cleanupExpiredGenerationJobs({ limit })
 
   return {
     apimart,
+    cleanup,
     ok: true,
     stale,
   }

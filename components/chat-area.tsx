@@ -3,7 +3,7 @@
 import { type DragEvent, useEffect, useRef, useState } from "react"
 import type { WorkspaceSection } from "@/lib/workspace-section"
 import type { MembershipTier } from "@/lib/local-store"
-import type { ProjectItem, ProjectStatus, ProjectType } from "@/lib/project-history"
+import { generationRetentionNotice, type ProjectItem, type ProjectStatus, type ProjectType } from "@/lib/project-history"
 import type { CreditPackage, CustomerServiceSettings, ModelPricing } from "@/lib/supabase"
 import { calculatePricingCredits, getSupabaseClient, redeemCreditCode } from "@/lib/supabase"
 import { formatLedgerDateTime } from "@/lib/date-time"
@@ -528,7 +528,17 @@ function PricingLoadingNotice() {
   )
 }
 
+function RetentionNotice() {
+  return (
+    <div className="mt-4 flex items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800">
+      <AlertCircle className="h-4 w-4 shrink-0" />
+      <span>{generationRetentionNotice}</span>
+    </div>
+  )
+}
+
 interface ImageResult {
+  clientRequestId?: string
   id: string
   prompt: string
   model: string
@@ -546,6 +556,7 @@ interface ImageResult {
 }
 
 interface VideoResult {
+  clientRequestId?: string
   id: string
   prompt: string
   model: string
@@ -632,42 +643,6 @@ function resolveVideoTaskProject(task: TaskStatusResponse, fallbackUrl = "") {
     taskError,
   }
 }
-
-const seedHistoryItems: ProjectItem[] = [
-  {
-    id: "seed-image-1",
-    title: "赛博城市夜景海报",
-    type: "生图",
-    status: "已完成",
-    time: "今天 11:20",
-    model: "商业海报 V1",
-    palette: "from-indigo-500 via-sky-400 to-emerald-300",
-    previewLabel: "2K · 16:9",
-    prompt: "赛博城市夜景，霓虹灯，未来商业海报",
-  },
-  {
-    id: "seed-video-1",
-    title: "产品宣传短视频",
-    type: "视频",
-    status: "生成中",
-    time: "今天 10:48",
-    model: "产品运镜 V1",
-    palette: "from-slate-950 via-indigo-700 to-cyan-400",
-    previewLabel: "10 秒 · 720P",
-    prompt: "科技产品在黑色展台缓慢旋转，镜头推进",
-  },
-  {
-    id: "seed-image-2",
-    title: "国风角色设定",
-    type: "生图",
-    status: "已完成",
-    time: "昨天 18:05",
-    model: "国风插画 V1",
-    palette: "from-amber-300 via-orange-400 to-rose-400",
-    previewLabel: "4K · 3:4",
-    prompt: "国风侠客角色设定，长袍，水墨背景",
-  },
-]
 
 export function ChatArea({
   activeSection,
@@ -810,6 +785,7 @@ export function ChatArea({
       palette: result.palette,
       prompt: result.prompt,
       imageUrls: result.imageUrls,
+      clientRequestId: result.clientRequestId,
       previewLabel: `${result.quality} · ${result.ratio} · ${result.imageCount} 张`,
       previewUrl: result.imageUrl,
       expectedCount: result.imageCount,
@@ -833,6 +809,7 @@ export function ChatArea({
       previewLabel: `${result.duration} · ${result.quality} · ${result.aspectRatio}`,
       previewUrl: result.videoUrl,
       expectedCount: 1,
+      clientRequestId: result.clientRequestId,
       ratio: result.aspectRatio,
       stage: result.status === "生成中" ? "智能创意中" : "",
       taskId: result.taskId,
@@ -901,7 +878,7 @@ export function ChatArea({
           )}
           {activeSection === "history" && (
             <HistoryWorkspace
-              items={[...projects, ...seedHistoryItems]}
+              items={projects}
               onDeleteProject={onProjectDelete}
               onSectionChange={onSectionChange}
             />
@@ -1113,12 +1090,14 @@ function ImageWorkspace({
 
     setError("")
     setIsGenerating(true)
+    const clientRequestId = crypto.randomUUID()
     const optimisticId = `pending-image-${Date.now()}`
     const resolvedRatio =
       ratio === imageDefaultRatioOption ? resolveReferenceImageRatio(referenceImages[0], ratioOptions) : ratio
 
     onImageGenerated({
       id: optimisticId,
+      clientRequestId,
       prompt: trimmedPrompt,
       model,
       quality,
@@ -1141,6 +1120,7 @@ function ImageWorkspace({
       formData.append("model", model)
       formData.append("quality", quality)
       formData.append("imageCount", String(parsedImageCount))
+      formData.append("clientRequestId", clientRequestId)
 
       formData.append("ratio", resolvedRatio)
       referenceImages.forEach((image) => {
@@ -1173,6 +1153,7 @@ function ImageWorkspace({
             : "生成中"
       const generatedResult: ImageResult = {
         id: optimisticId,
+        clientRequestId: typeof data.clientRequestId === "string" ? data.clientRequestId : clientRequestId,
         prompt: trimmedPrompt,
         model,
         quality,
@@ -1193,6 +1174,7 @@ function ImageWorkspace({
     } catch (error) {
       onImageGenerated({
         id: optimisticId,
+        clientRequestId,
         prompt: trimmedPrompt,
         model,
         quality,
@@ -1346,6 +1328,7 @@ function ImageWorkspace({
           ) : (
             <PricingLoadingNotice />
           )}
+          <RetentionNotice />
           <div className="mt-5 flex flex-col gap-3 sm:flex-row">
             <Button className="rounded-2xl border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-slate-950" variant="outline" onClick={() => onSectionChange("history")}>
               查看历史项目
@@ -1543,10 +1526,12 @@ function VideoWorkspace({
 
     setError("")
     setIsGenerating(true)
+    const clientRequestId = crypto.randomUUID()
     const optimisticId = `pending-video-${Date.now()}`
 
     onVideoGenerated({
       id: optimisticId,
+      clientRequestId,
       prompt: trimmedPrompt,
       model,
       aspectRatio,
@@ -1570,6 +1555,7 @@ function VideoWorkspace({
       formData.append("duration", duration)
       formData.append("quality", quality)
       formData.append("aspectRatio", aspectRatio)
+      formData.append("clientRequestId", clientRequestId)
       referenceImages.forEach((image) => {
         formData.append("referenceImages", image.file, image.name)
       })
@@ -1592,6 +1578,7 @@ function VideoWorkspace({
 
       const generatedResult: VideoResult = {
         id: optimisticId,
+        clientRequestId: typeof data.clientRequestId === "string" ? data.clientRequestId : clientRequestId,
         prompt: trimmedPrompt,
         model,
         aspectRatio,
@@ -1612,6 +1599,7 @@ function VideoWorkspace({
     } catch (error) {
       onVideoGenerated({
         id: optimisticId,
+        clientRequestId,
         prompt: trimmedPrompt,
         model,
         aspectRatio,
@@ -1761,6 +1749,7 @@ function VideoWorkspace({
             </div>
           )}
           {billingReady ? <PricingNotice estimatedCredits={estimatedCredits} /> : <PricingLoadingNotice />}
+          <RetentionNotice />
           <div className="mt-5 flex flex-col gap-3 sm:flex-row">
             <Button className="rounded-2xl border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-slate-950" variant="outline" onClick={() => onSectionChange("history")}>
               查看历史项目
@@ -1807,6 +1796,10 @@ function HistoryWorkspace({
               <h2 className="text-base font-semibold text-slate-950">历史项目</h2>
             </div>
             <p className="mt-1 text-sm text-slate-500">统一查看本次会话中的生图和视频生成记录。</p>
+            <div className="mt-2 flex items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              <span>{generationRetentionNotice}</span>
+            </div>
           </div>
           <div className="flex gap-2">
             {(["全部", "生图", "视频"] as HistoryFilter[]).map((item) => (

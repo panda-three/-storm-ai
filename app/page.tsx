@@ -9,6 +9,7 @@ import { useAccountSession, getErrorMessage } from "@/hooks/use-account-session"
 import type { WorkspaceSection } from "@/lib/workspace-section"
 import {
   createDeletedProjectItem,
+  isServerBackedProjectItem,
   isDeletedProjectItem,
   normalizeProjectItem,
   type ProjectItem,
@@ -17,6 +18,7 @@ import {
   type CreditPackage,
   type CustomerServiceSettings,
   type ModelPricing,
+  getSupabaseClient,
   loadCreditPackages,
   loadCustomerServiceSettings,
   loadModelPricing,
@@ -137,12 +139,18 @@ function HomeContent() {
       const project = current.projects.find((item) => item.id === id)
       if (!project) return current
 
+      if (isServerBackedProjectItem(project) && project.taskId) {
+        deleteRemoteProject(project.taskId).catch((error) => {
+          setSyncError(getErrorMessage(error, "删除云端生成历史失败。"))
+        })
+      }
+
       return {
         ...current,
         projects: [createDeletedProjectItem(project), ...current.projects.filter((item) => item.id !== id)],
       }
     })
-  }, [setAccount])
+  }, [setAccount, setSyncError])
 
   if (!authReady) {
     return (
@@ -223,4 +231,27 @@ function HomeContent() {
       />
     </div>
   )
+}
+
+async function deleteRemoteProject(taskId: string) {
+  const supabase = getSupabaseClient()
+  if (!supabase) return
+
+  const { data, error } = await supabase.auth.getSession()
+  if (error) throw error
+
+  const token = data.session?.access_token
+  if (!token) return
+
+  const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    method: "DELETE",
+  })
+  const payload = await response.json().catch(() => ({}))
+
+  if (!response.ok || !payload.ok) {
+    throw new Error(getErrorMessage(payload, "删除云端生成历史失败。"))
+  }
 }

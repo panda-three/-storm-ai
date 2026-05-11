@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import {
   createGenerationJobWithBilling,
   failGenerationJobWithRefund,
+  getGenerationJobExpiresAt,
   updateActiveGenerationJob,
   type GenerationJobStatus,
 } from "@/lib/generation-jobs"
@@ -50,6 +51,7 @@ export async function POST(request: Request) {
     const quality = String(getValue("quality") ?? "2K")
     const ratio = String(getValue("ratio") ?? "1:1")
     const imageCount = parseImageCount(getValue("imageCount"))
+    const clientRequestId = String(getValue("clientRequestId") ?? "").trim()
     const referenceImages = body instanceof FormData ? body.getAll("referenceImages").filter(isImageFile) : []
 
     if (!isValidImageRatioForQuality(model, quality, ratio)) {
@@ -84,6 +86,7 @@ export async function POST(request: Request) {
       quality,
       ratio,
       imageCount,
+      clientRequestId,
       referenceImages: referenceImages.map(toFileLog),
       userId: maskId(userId),
     })
@@ -96,6 +99,7 @@ export async function POST(request: Request) {
 
     const job = await createGenerationJobWithBilling({
       amount: billingAmount,
+      clientRequestId,
       expectedResultCount: imageCount,
       isFree,
       model,
@@ -133,13 +137,12 @@ export async function POST(request: Request) {
 
       try {
         for (const generated of successfulImages) {
-          imageUrls.push(
-            await uploadGeneratedImage({
-              buffer: generated.buffer,
-              contentType: generated.mimeType,
-              userId,
-            })
-          )
+          const uploaded = await uploadGeneratedImage({
+            buffer: generated.buffer,
+            contentType: generated.mimeType,
+            userId,
+          })
+          imageUrls.push(uploaded.publicUrl)
         }
 
         if (imageUrls.length === 0) {
@@ -156,10 +159,13 @@ export async function POST(request: Request) {
               })
             : null
 
+        const completedAt = new Date().toISOString()
         const nextJob = await updateActiveGenerationJob(job.id, {
-          completed_at: new Date().toISOString(),
+          completed_at: completedAt,
+          expires_at: getGenerationJobExpiresAt(completedAt),
           result_urls: imageUrls,
           status,
+          storage_urls: imageUrls,
           task_error: taskError,
         })
 
@@ -185,6 +191,7 @@ export async function POST(request: Request) {
           status,
           type: "image",
           imageUrls,
+          clientRequestId,
           progress: 100,
           taskError: taskError ?? "",
         })
@@ -230,6 +237,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       ...result,
+      clientRequestId,
       taskId: job.id,
       upstreamTaskId: result.taskId,
     })

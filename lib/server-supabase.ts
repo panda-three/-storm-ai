@@ -168,17 +168,27 @@ export async function uploadGeneratedImage({
     throw new Error("生成图片已上传，但未取得公开访问 URL。")
   }
 
-  return data.publicUrl
+  return {
+    bucket,
+    path,
+    publicUrl: data.publicUrl,
+  }
 }
 
-export async function deleteGeneratedImageByPublicUrl(publicUrl: string) {
+export function getGeneratedStorageObjectPath(publicUrl: string) {
   const bucket = process.env.SUPABASE_GENERATED_IMAGES_BUCKET ?? "generated-images"
   const marker = `/storage/v1/object/public/${bucket}/`
   const markerIndex = publicUrl.indexOf(marker)
 
-  if (markerIndex === -1) return
+  if (markerIndex === -1) return ""
 
   const path = decodeURIComponent(publicUrl.slice(markerIndex + marker.length).split("?")[0] ?? "")
+  return path
+}
+
+export async function deleteGeneratedImageByPublicUrl(publicUrl: string) {
+  const bucket = process.env.SUPABASE_GENERATED_IMAGES_BUCKET ?? "generated-images"
+  const path = getGeneratedStorageObjectPath(publicUrl)
   if (!path) return
 
   const { error } = await getSupabaseServerClient().storage.from(bucket).remove([path])
@@ -235,11 +245,12 @@ export async function persistRemoteGeneratedImage({
     throw new Error("生成图片超过 25MB，无法保存到历史项目。")
   }
 
-  return uploadGeneratedImage({
+  const uploaded = await uploadGeneratedImage({
     buffer,
     contentType,
     userId,
   })
+  return uploaded.publicUrl
 }
 
 export function describeServerError(error: unknown, fallback: string) {

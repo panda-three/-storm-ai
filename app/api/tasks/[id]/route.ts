@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server"
 import {
   failGenerationJobWithRefund,
+  deleteGenerationJobForUser,
+  getGenerationJobExpiresAt,
   loadGenerationJobForUser,
   updateActiveGenerationJob,
   normalizeJobTaskStatus,
@@ -66,8 +68,10 @@ export async function GET(
         return NextResponse.json(normalizeJobTaskStatus(failedJob))
       }
 
+      const completedAt = status === "completed" ? recoveredJob.completed_at ?? new Date().toISOString() : recoveredJob.completed_at
       const nextJob = await updateActiveGenerationJob(recoveredJob.id, {
-        completed_at: status === "completed" ? recoveredJob.completed_at ?? new Date().toISOString() : recoveredJob.completed_at,
+        completed_at: completedAt,
+        expires_at: status === "completed" && completedAt ? recoveredJob.expires_at ?? getGenerationJobExpiresAt(completedAt) : recoveredJob.expires_at,
         last_checked_at: new Date().toISOString(),
         last_sync_error: null,
         next_check_at: status === "completed" ? new Date().toISOString() : recoveredJob.next_check_at,
@@ -88,6 +92,32 @@ export async function GET(
     return NextResponse.json(normalizeJobTaskStatus(result.job))
   } catch (error) {
     const message = error instanceof Error ? error.message : "任务状态查询失败。"
+    return NextResponse.json(
+      {
+        ok: false,
+        error: message,
+      },
+      { status: message.includes("登录") ? 401 : 500 }
+    )
+  }
+}
+
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const auth = await requireAuthenticatedUser(request)
+    const { id } = await params
+
+    if (!id) {
+      return NextResponse.json({ ok: false, error: "缺少任务 ID。" }, { status: 400 })
+    }
+
+    const deleted = await deleteGenerationJobForUser({ taskId: id, userId: auth.userId })
+    return NextResponse.json({ deleted, ok: true })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "删除生成历史失败。"
     return NextResponse.json(
       {
         ok: false,

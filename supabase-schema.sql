@@ -210,11 +210,14 @@ create table if not exists public.generation_jobs (
   model text not null,
   prompt text not null,
   amount integer not null check (amount >= 0),
+  client_request_id text,
   expected_result_count integer not null default 1 check (expected_result_count between 1 and 4),
+  expires_at timestamptz,
   reference text not null unique,
   status text not null default 'submitted' check (status in ('submitted', 'processing', 'completed', 'failed', 'partial_completed')),
   upstream_task_id text,
   result_urls jsonb not null default '[]'::jsonb,
+  storage_urls jsonb not null default '[]'::jsonb,
   task_error text,
   last_checked_at timestamptz,
   next_check_at timestamptz not null default now(),
@@ -232,14 +235,29 @@ alter table public.generation_jobs add column if not exists check_attempts integ
 alter table public.generation_jobs add column if not exists last_sync_error text;
 alter table public.generation_jobs add column if not exists sync_locked_until timestamptz;
 alter table public.generation_jobs add column if not exists completed_at timestamptz;
+alter table public.generation_jobs add column if not exists client_request_id text;
 alter table public.generation_jobs add column if not exists expected_result_count integer not null default 1;
+alter table public.generation_jobs add column if not exists expires_at timestamptz;
+alter table public.generation_jobs add column if not exists storage_urls jsonb not null default '[]'::jsonb;
 alter table public.generation_jobs drop constraint if exists generation_jobs_status_check;
 alter table public.generation_jobs add constraint generation_jobs_status_check check (status in ('submitted', 'processing', 'completed', 'failed', 'partial_completed')) not valid;
 alter table public.generation_jobs drop constraint if exists generation_jobs_expected_result_count_check;
 alter table public.generation_jobs add constraint generation_jobs_expected_result_count_check check (expected_result_count between 1 and 4) not valid;
+alter table public.generation_jobs drop constraint if exists generation_jobs_storage_urls_check;
+alter table public.generation_jobs add constraint generation_jobs_storage_urls_check check (jsonb_typeof(storage_urls) = 'array') not valid;
+
+update public.generation_jobs
+set expires_at = coalesce(completed_at, created_at) + interval '24 hours'
+where expires_at is null
+  and status in ('completed', 'failed', 'partial_completed');
 
 create index if not exists generation_jobs_user_id_idx on public.generation_jobs (user_id, created_at desc);
 create index if not exists generation_jobs_upstream_task_id_idx on public.generation_jobs (upstream_task_id);
+create unique index if not exists generation_jobs_user_client_request_id_unique_idx
+on public.generation_jobs (user_id, client_request_id)
+where client_request_id is not null;
+create index if not exists generation_jobs_expires_at_idx on public.generation_jobs (expires_at)
+where status in ('completed', 'failed', 'partial_completed');
 create index if not exists generation_jobs_sync_due_idx
 on public.generation_jobs (next_check_at, created_at)
 where provider = 'apimart'
@@ -961,7 +979,8 @@ create or replace function public.create_generation_job_with_billing(
   p_model text,
   p_prompt text,
   p_expected_result_count integer,
-  p_is_free boolean default false
+  p_is_free boolean default false,
+  p_client_request_id text default null
 )
 returns jsonb
 language plpgsql
@@ -970,6 +989,7 @@ set search_path = public
 as $$
 declare
   v_reference text := trim(p_reference);
+  v_client_request_id text := nullif(trim(coalesce(p_client_request_id, '')), '');
   v_reason text := coalesce(nullif(trim(p_reason), ''), 'AI 生成');
   v_ledger jsonb;
   v_job public.generation_jobs%rowtype;
@@ -1041,6 +1061,7 @@ begin
 
   insert into public.generation_jobs (
     amount,
+    client_request_id,
     expected_result_count,
     model,
     prompt,
@@ -1052,6 +1073,7 @@ begin
   )
   values (
     case when p_is_free then 0 else p_amount end,
+    v_client_request_id,
     p_expected_result_count,
     p_model,
     p_prompt,
@@ -1129,6 +1151,7 @@ begin
   update public.generation_jobs
   set
     completed_at = coalesce(completed_at, now()),
+    expires_at = coalesce(expires_at, coalesce(completed_at, now()) + interval '24 hours'),
     last_checked_at = now(),
     last_sync_error = p_reason,
     next_check_at = now(),
@@ -1151,10 +1174,10 @@ revoke execute on function public.refund_credits(integer, text, text) from publi
 revoke execute on function public.spend_generation_credits(uuid, integer, text, text) from public, anon, authenticated;
 revoke execute on function public.record_free_generation_usage(uuid, text, text) from public, anon, authenticated;
 revoke execute on function public.refund_generation_credits(uuid, integer, text, text) from public, anon, authenticated;
-revoke execute on function public.create_generation_job_with_billing(uuid, integer, text, text, text, text, text, text, integer, boolean) from public, anon, authenticated;
+revoke execute on function public.create_generation_job_with_billing(uuid, integer, text, text, text, text, text, text, integer, boolean, text) from public, anon, authenticated;
 revoke execute on function public.fail_generation_job_with_refund(uuid, text) from public, anon, authenticated;
 grant execute on function public.spend_generation_credits(uuid, integer, text, text) to service_role;
 grant execute on function public.record_free_generation_usage(uuid, text, text) to service_role;
 grant execute on function public.refund_generation_credits(uuid, integer, text, text) to service_role;
-grant execute on function public.create_generation_job_with_billing(uuid, integer, text, text, text, text, text, text, integer, boolean) to service_role;
+grant execute on function public.create_generation_job_with_billing(uuid, integer, text, text, text, text, text, text, integer, boolean, text) to service_role;
 grant execute on function public.fail_generation_job_with_refund(uuid, text) to service_role;

@@ -10,6 +10,7 @@ export interface ProjectItem {
   type: ProjectType
   status: ProjectStatus
   time: string
+  clientRequestId?: string
   deletedAt?: string
   expectedCount?: number
   model?: string
@@ -22,7 +23,10 @@ export interface ProjectItem {
   stage?: string
   taskId?: string
   taskError?: string
+  upstreamTaskId?: string
 }
+
+export const generationRetentionNotice = "温馨提示：作品在服务器仅保留 1 天，请及时下载到本地保存。"
 
 export function normalizeProjectItem(project: ProjectItem): ProjectItem {
   const rawStatus = String(project.status ?? "").trim().toLowerCase()
@@ -60,7 +64,15 @@ export function isDeletedProjectItem(project: ProjectItem) {
 }
 
 function getProjectKeys(project: ProjectItem) {
-  return [project.taskId, project.id].filter(Boolean) as string[]
+  const keys = new Set<string>()
+  ;[project.clientRequestId, project.taskId, project.upstreamTaskId, project.id].forEach((key) => {
+    if (key) keys.add(key)
+  })
+
+  if (project.taskId) keys.add(`job-${project.taskId}`)
+  if (project.id?.startsWith("job-")) keys.add(project.id.slice(4))
+
+  return Array.from(keys)
 }
 
 export function createDeletedProjectItem(project: ProjectItem): ProjectItem {
@@ -71,8 +83,26 @@ export function createDeletedProjectItem(project: ProjectItem): ProjectItem {
     status: project.status,
     time: project.time,
     deletedAt: new Date().toISOString(),
+    clientRequestId: project.clientRequestId,
     taskId: project.taskId,
+    upstreamTaskId: project.upstreamTaskId,
   })
+}
+
+export function isServerBackedProjectItem(project: ProjectItem) {
+  return Boolean(project.taskId && !project.id.startsWith("pending-") && !project.id.startsWith("seed-"))
+}
+
+function isLegacyPendingProjectItem(project: ProjectItem) {
+  return project.id.startsWith("pending-") && !project.clientRequestId
+}
+
+function getLegacyPendingMatchKey(project: ProjectItem) {
+  return [
+    project.type,
+    project.model ?? "",
+    project.prompt ?? project.title,
+  ].join("\u001f")
 }
 
 function normalizeGenerationJobStatus(status: GenerationJob["status"]): ProjectStatus {
@@ -112,6 +142,7 @@ export function generationJobToProjectItem(job: GenerationJob): ProjectItem {
     type: isImage ? "生图" : "视频",
     status: normalizeGenerationJobStatus(job.status),
     time: formatLedgerDateTime(job.created_at),
+    clientRequestId: job.client_request_id ?? undefined,
     model: job.model,
     palette: isImage ? "from-indigo-500 via-sky-400 to-emerald-300" : "from-slate-950 via-indigo-700 to-cyan-400",
     prompt: job.prompt,
@@ -120,6 +151,7 @@ export function generationJobToProjectItem(job: GenerationJob): ProjectItem {
     previewUrl: resultUrls[0] ?? "",
     taskId: job.id,
     taskError: job.task_error ?? "",
+    upstreamTaskId: job.upstream_task_id ?? undefined,
   })
 }
 
@@ -150,22 +182,26 @@ export function mergeProjectHistories(serverProjects: ProjectItem[], localProjec
     merged[existingIndex] = preferServerFields
       ? normalizeProjectItem({
           ...normalized,
-          id: existing.id,
+          id: existing.id.startsWith("pending-") ? normalized.id : existing.id,
+          clientRequestId: normalized.clientRequestId || existing.clientRequestId,
           palette: existing.palette ?? normalized.palette,
           imageUrls: mergeImageUrls(normalized, existing),
           previewLabel: existing.previewLabel ?? normalized.previewLabel,
           previewUrl: normalized.previewUrl || existing.previewUrl,
           title: existing.title || normalized.title,
+          upstreamTaskId: normalized.upstreamTaskId || existing.upstreamTaskId,
         })
       : normalizeProjectItem({
           ...normalized,
-          status: existing.status,
+          status: isServerBackedProjectItem(existing) ? existing.status : normalized.status,
           id: normalized.id,
+          clientRequestId: existing.clientRequestId || normalized.clientRequestId,
           palette: normalized.palette ?? existing.palette,
-          imageUrls: mergeImageUrls(existing, normalized),
+          imageUrls: isServerBackedProjectItem(existing) ? mergeImageUrls(existing, normalized) : mergeImageUrls(normalized, existing),
           previewLabel: normalized.previewLabel ?? existing.previewLabel,
-          previewUrl: existing.previewUrl || normalized.previewUrl,
-          taskError: existing.taskError || normalized.taskError,
+          previewUrl: isServerBackedProjectItem(existing) ? existing.previewUrl || normalized.previewUrl : normalized.previewUrl || existing.previewUrl,
+          taskError: isServerBackedProjectItem(existing) ? existing.taskError || normalized.taskError : normalized.taskError || existing.taskError,
+          upstreamTaskId: existing.upstreamTaskId || normalized.upstreamTaskId,
         })
   }
 
@@ -173,4 +209,22 @@ export function mergeProjectHistories(serverProjects: ProjectItem[], localProjec
   localProjects.forEach((project) => addProject(project, false))
 
   return merged
+}
+
+export function mergeSyncedProjectHistories(serverProjects: ProjectItem[], localProjects: ProjectItem[]) {
+  const serverTaskIds = new Set(serverProjects.map((project) => project.taskId).filter(Boolean))
+  const serverClientRequestIds = new Set(serverProjects.map((project) => project.clientRequestId).filter(Boolean))
+  const serverLegacyPendingMatchKeys = new Set(serverProjects.map(getLegacyPendingMatchKey))
+  const visibleLocalProjects = localProjects.filter((project) => {
+    if (isServerBackedProjectItem(project)) return serverTaskIds.has(project.taskId)
+    if (project.id.startsWith("pending-") && project.clientRequestId && serverClientRequestIds.has(project.clientRequestId)) {
+      return false
+    }
+    if (isLegacyPendingProjectItem(project) && serverLegacyPendingMatchKeys.has(getLegacyPendingMatchKey(project))) {
+      return false
+    }
+    return true
+  })
+
+  return mergeProjectHistories(serverProjects, visibleLocalProjects)
 }

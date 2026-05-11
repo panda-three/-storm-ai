@@ -10,6 +10,7 @@ import {
 } from "@/lib/local-store"
 import {
   mergeProjectHistories,
+  mergeSyncedProjectHistories,
   normalizeProjectItem,
   type ProjectItem,
 } from "@/lib/project-history"
@@ -195,7 +196,7 @@ export function useAccountSession() {
               if (!current || current.userId !== userId) return current
               return {
                 ...current,
-                projects: mergeProjectHistories(serverProjects, current.projects),
+                projects: mergeSyncedProjectHistories(serverProjects, current.projects),
               }
             })
           })
@@ -244,7 +245,7 @@ export function useAccountSession() {
       const refreshedAccount = createAccountFromRemote(userId, remoteAccount)
       setAccount((current) => ({
         ...refreshedAccount,
-        projects: mergeProjectHistories(current?.projects ?? [], refreshedAccount.projects),
+        projects: mergeProjectHistories(refreshedAccount.projects, current?.projects ?? []),
       }))
       setAccountStatus("ready")
 
@@ -254,7 +255,7 @@ export function useAccountSession() {
             if (!current || current.userId !== userId) return current
             return {
               ...current,
-              projects: mergeProjectHistories(serverProjects, current.projects),
+              projects: mergeSyncedProjectHistories(serverProjects, current.projects),
             }
           })
         })

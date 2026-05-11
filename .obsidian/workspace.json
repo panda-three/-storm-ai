@@ -181,6 +181,12 @@
   },
   "active": "f17acf23ff6ebcba",
   "lastOpenFiles": [
+    "release-checklist.md",
+    "develop1.md",
+    "需求文档.md",
+    "AGENTS.md",
+    "develop.md",
+    "supabase-schema.sql",
     "app/admin/ledger/page.tsx",
     "app/admin/users/page.tsx",
     "app/admin/redeem-codes/page.tsx",
@@ -190,10 +196,7 @@
     "app/admin/layout.tsx",
     "components/admin/ledger-panel.tsx",
     "components/admin/users-panel.tsx",
-    "components/admin/redeem-codes-panel.tsx",
-    "components/admin/pricing-panel.tsx",
     "docs/generation-queue-and-task-flow-research.md",
-    "docs/vercel-usage-metrics.md",
-    "develop.md"
+    "docs/vercel-usage-metrics.md"
   ]
 }
