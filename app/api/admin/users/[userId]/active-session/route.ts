@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { describeServerError, getSupabaseServerClient, requireAdminUser } from "@/lib/server-supabase"
+import { describeServerError, getServerErrorStatus, getSupabaseServerClient, requireAdminUser } from "@/lib/server-supabase"
 
 export async function DELETE(request: Request, { params }: { params: Promise<{ userId: string }> }) {
   try {
@@ -34,7 +34,7 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ u
     const message = describeServerError(error, "解除登录占用失败。")
     return NextResponse.json(
       { ok: false, error: message },
-      { status: message.includes("登录") ? 401 : message.includes("管理员") ? 403 : 500 }
+      { status: getServerErrorStatus(error, message.includes("管理员") ? 403 : 500) }
     )
   }
 }

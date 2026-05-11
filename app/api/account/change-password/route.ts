@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
-import { describeServerError, getSupabaseServerClient, requireAuthenticatedUser } from "@/lib/server-supabase"
+import { describeServerError, getServerErrorStatus, getSupabaseServerClient, requireAuthenticatedUser } from "@/lib/server-supabase"
 
 async function verifyCurrentPassword(email: string, password: string) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -91,6 +91,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true })
   } catch (error) {
     const message = describeServerError(error, "修改密码失败。")
-    return NextResponse.json({ ok: false, error: message }, { status: message.includes("登录") ? 401 : 400 })
+    return NextResponse.json({ ok: false, error: message }, { status: getServerErrorStatus(error, 400) })
   }
 }

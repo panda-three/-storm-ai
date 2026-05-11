@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { syncApimartGenerationJob } from "@/lib/apimart-task-sync"
 import { loadGenerationJobsForUser, loadInteractiveApimartGenerationJobsForUser, recoverStaleGenerationJobsForUser } from "@/lib/generation-jobs"
 import { generationJobToProjectItem } from "@/lib/project-history"
-import { requireAuthenticatedUser } from "@/lib/server-supabase"
+import { getServerErrorStatus, requireAuthenticatedUser } from "@/lib/server-supabase"
 
 export async function GET(request: Request) {
   try {
@@ -24,7 +24,7 @@ export async function GET(request: Request) {
         ok: false,
         error: message,
       },
-      { status: message.includes("登录") ? 401 : 500 }
+      { status: getServerErrorStatus(error) }
     )
   }
 }

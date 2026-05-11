@@ -5,7 +5,7 @@ import {
   getReferenceImagePathPrefix,
   validateReferenceImageMetadata,
 } from "@/lib/reference-images"
-import { describeServerError, getSupabaseServerClient, requireAuthenticatedUser } from "@/lib/server-supabase"
+import { describeServerError, getServerErrorStatus, getSupabaseServerClient, requireAuthenticatedUser } from "@/lib/server-supabase"
 
 export async function POST(request: Request) {
   try {
@@ -44,7 +44,7 @@ export async function POST(request: Request) {
         ok: false,
         error: message,
       },
-      { status: message.includes("登录") ? 401 : 400 }
+      { status: getServerErrorStatus(error, 400) }
     )
   }
 }

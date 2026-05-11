@@ -24,6 +24,7 @@ import {
 import {
   getSupabaseServerClient,
   describeServerError,
+  getServerErrorStatus,
   deleteGeneratedImageByPublicUrl,
   refundGenerationCredits,
   requireAuthenticatedUser,
@@ -465,7 +466,7 @@ export async function POST(request: Request) {
         ok: false,
         error: failureMessage,
       },
-      { status: message.includes("登录") ? 401 : 500 }
+      { status: getServerErrorStatus(error) }
     )
   } finally {
     await cleanupStoredReferenceImages(preparedReferenceImages)

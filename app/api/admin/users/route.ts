@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { describeServerError, getSupabaseServerClient, requireAdminUser } from "@/lib/server-supabase"
+import { describeServerError, getServerErrorStatus, getSupabaseServerClient, requireAdminUser } from "@/lib/server-supabase"
 import type { AdminAccountRow, AdminAccountSummary } from "@/lib/supabase"
 
 export async function GET(request: Request) {
@@ -53,7 +53,7 @@ export async function GET(request: Request) {
     const message = describeServerError(error, "加载用户列表失败。")
     return NextResponse.json(
       { ok: false, error: message },
-      { status: message.includes("登录") ? 401 : message.includes("管理员") ? 403 : 500 }
+      { status: getServerErrorStatus(error, message.includes("管理员") ? 403 : 500) }
     )
   }
 }

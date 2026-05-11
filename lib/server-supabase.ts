@@ -11,6 +11,21 @@ interface RequireAuthenticatedUserOptions {
   allowPasswordChangeRequired?: boolean
 }
 
+export class ServerResponseError extends Error {
+  status: number
+
+  constructor(message: string, status: number, options?: ErrorOptions) {
+    super(message, options)
+    this.name = "ServerResponseError"
+    this.status = status
+  }
+}
+
+export function getServerErrorStatus(error: unknown, fallback = 500) {
+  if (error instanceof ServerResponseError) return error.status
+  return fallback
+}
+
 export async function requireAdminUser(request: Request): Promise<AuthenticatedRequestUser> {
   const auth = await requireAuthenticatedUser(request)
   const { data, error } = await getSupabaseServerClient()
@@ -86,23 +101,29 @@ export async function requireAuthenticatedUser(
   const token = authorization.match(/^Bearer\s+(.+)$/i)?.[1]?.trim()
 
   if (!token) {
-    throw new Error("请先登录后再生成。")
+    throw new ServerResponseError("请先登录后再生成。", 401)
   }
 
   const supabase = getSupabaseUserAuthClient()
-  const { data, error } = await supabase.auth.getUser(token)
+  const { data, error } = await supabase.auth.getUser(token).catch((error: unknown) => {
+    const message = describeServerError(error, "认证服务连接失败。")
+    console.warn("[Supabase Auth] token verification request failed", {
+      message,
+    })
+    throw new ServerResponseError("认证服务暂时不可用，请稍后重试。", 503, { cause: error })
+  })
 
   if (error || !data.user) {
     console.warn("[Supabase Auth] token verification failed", {
       message: error?.message,
       status: error?.status,
     })
-    throw new Error("登录状态已失效，请重新登录。")
+    throw new ServerResponseError("登录状态已失效，请重新登录。", 401, { cause: error })
   }
 
   const sessionId = getSessionIdFromAccessToken(token)
   if (!sessionId) {
-    throw new Error("登录状态缺少会话标识，请重新登录。")
+    throw new ServerResponseError("登录状态缺少会话标识，请重新登录。", 401)
   }
 
   await assertActiveServerSession({
@@ -168,7 +189,7 @@ async function assertActiveServerSession({
   }
 
   if (!data || data.session_id !== sessionId || data.revoked_at) {
-    throw new Error("该账号已在其他设备登录或已被解除登录占用，请重新登录。")
+    throw new ServerResponseError("该账号已在其他设备登录或已被解除登录占用，请重新登录。", 401)
   }
 
   const { error: updateError } = await supabase

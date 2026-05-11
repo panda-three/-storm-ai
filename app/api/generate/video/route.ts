@@ -11,6 +11,7 @@ import { calculatePricingCredits, type ModelPricing } from "@/lib/supabase"
 import {
   getSupabaseServerClient,
   describeServerError,
+  getServerErrorStatus,
   requireAuthenticatedUser,
   uploadGeneratedImage,
 } from "@/lib/server-supabase"
@@ -290,7 +291,7 @@ export async function POST(request: Request) {
         ok: false,
         error: message,
       },
-      { status: message.includes("登录") ? 401 : 500 }
+      { status: getServerErrorStatus(error) }
     )
   } finally {
     if (cleanupPreparedReferenceImages) {

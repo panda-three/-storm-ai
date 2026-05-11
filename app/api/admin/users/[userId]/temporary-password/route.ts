@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { describeServerError, getSupabaseServerClient, requireAdminUser } from "@/lib/server-supabase"
+import { describeServerError, getServerErrorStatus, getSupabaseServerClient, requireAdminUser } from "@/lib/server-supabase"
 
 const passwordChars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*"
 
@@ -85,7 +85,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ use
     const message = describeServerError(error, "生成临时密码失败。")
     return NextResponse.json(
       { ok: false, error: message },
-      { status: message.includes("登录") ? 401 : message.includes("管理员") ? 403 : 500 }
+      { status: getServerErrorStatus(error, message.includes("管理员") ? 403 : 500) }
     )
   }
 }

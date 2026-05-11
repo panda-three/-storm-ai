@@ -17,7 +17,7 @@ import { getTaskStatus } from "@/lib/apimart"
 import { getMengfactoryVideoTaskStatus } from "@/lib/mengfactory"
 import { getYunwuVideoTaskStatus } from "@/lib/yunwu"
 import { syncApimartGenerationJob } from "@/lib/apimart-task-sync"
-import { requireAuthenticatedUser } from "@/lib/server-supabase"
+import { getServerErrorStatus, requireAuthenticatedUser } from "@/lib/server-supabase"
 
 export async function GET(
   request: Request,
@@ -109,7 +109,7 @@ export async function GET(
         ok: false,
         error: message,
       },
-      { status: message.includes("登录") ? 401 : 500 }
+      { status: getServerErrorStatus(error) }
     )
   }
 }
@@ -135,7 +135,7 @@ export async function DELETE(
         ok: false,
         error: message,
       },
-      { status: message.includes("登录") ? 401 : 500 }
+      { status: getServerErrorStatus(error) }
     )
   }
 }
