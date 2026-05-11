@@ -15,7 +15,7 @@ import {
   X,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { getSupabaseClient, isSupabaseConfigured } from "@/lib/supabase"
+import { claimCurrentAuthSession, getSupabaseClient, isSupabaseConfigured } from "@/lib/supabase"
 import { cn } from "@/lib/utils"
 
 interface AuthPanelProps {
@@ -228,7 +228,7 @@ function AuthForm({
       </Button>
 
       <p className="mt-4 text-center text-xs leading-5 text-slate-500">
-        使用即表示继续使用季风创绘的创作与点数服务。
+        忘记密码请联系客服核验账号后获取临时密码。
       </p>
     </div>
   )
@@ -334,6 +334,8 @@ export function AuthPanel({ onAuthed, variant = "page" }: AuthPanelProps) {
           setNotice("注册成功，请按 Supabase 邮件设置完成邮箱验证后再登录。")
           return
         }
+
+        await claimCurrentAuthSession()
       } else {
         const { error } = await supabase.auth.signInWithPassword({
           email: normalizedEmail,
@@ -341,6 +343,13 @@ export function AuthPanel({ onAuthed, variant = "page" }: AuthPanelProps) {
         })
 
         if (error) throw error
+
+        try {
+          await claimCurrentAuthSession()
+        } catch (error) {
+          await supabase.auth.signOut({ scope: "local" }).catch(() => undefined)
+          throw error
+        }
       }
 
       onAuthed()

@@ -25,6 +25,9 @@ export interface GenerationJob {
   next_check_at: string | null
   expected_result_count: number
   expires_at: string | null
+  quality: string | null
+  aspect_ratio: string | null
+  duration_seconds: number | null
   prompt: string
   provider: string
   reference: string
@@ -39,7 +42,7 @@ export interface GenerationJob {
 }
 
 const generationJobSelect =
-  "id, amount, check_attempts, client_request_id, completed_at, created_at, expected_result_count, expires_at, last_checked_at, last_sync_error, model, next_check_at, prompt, provider, reference, result_urls, status, storage_urls, sync_locked_until, task_error, type, upstream_task_id, user_id"
+  "id, amount, aspect_ratio, check_attempts, client_request_id, completed_at, created_at, duration_seconds, expected_result_count, expires_at, last_checked_at, last_sync_error, model, next_check_at, prompt, provider, quality, reference, result_urls, status, storage_urls, sync_locked_until, task_error, type, upstream_task_id, user_id"
 const legacyGenerationJobSelect =
   "id, amount, created_at, model, prompt, provider, reference, result_urls, status, task_error, type, upstream_task_id, user_id"
 
@@ -53,6 +56,9 @@ export async function createGenerationJob({
   model,
   prompt,
   provider,
+  quality,
+  aspectRatio,
+  durationSeconds,
   reference,
   type,
   userId,
@@ -64,6 +70,9 @@ export async function createGenerationJob({
   model: string
   prompt: string
   provider: string
+  quality?: string
+  aspectRatio?: string
+  durationSeconds?: number | null
   reference: string
   type: GenerationKind
   userId: string
@@ -74,6 +83,9 @@ export async function createGenerationJob({
       amount,
       client_request_id: clientRequestId || null,
       expected_result_count: expectedResultCount,
+      quality: quality || null,
+      aspect_ratio: aspectRatio || null,
+      duration_seconds: durationSeconds ?? null,
       model,
       prompt,
       provider,
@@ -98,6 +110,9 @@ export async function createGenerationJobWithBilling({
   model,
   prompt,
   provider,
+  quality,
+  aspectRatio,
+  durationSeconds,
   reason,
   reference,
   type,
@@ -111,6 +126,9 @@ export async function createGenerationJobWithBilling({
   model: string
   prompt: string
   provider: string
+  quality?: string
+  aspectRatio?: string
+  durationSeconds?: number | null
   reason: string
   reference: string
   type: GenerationKind
@@ -120,6 +138,9 @@ export async function createGenerationJobWithBilling({
     p_amount: amount,
     p_client_request_id: clientRequestId || null,
     p_expected_result_count: expectedResultCount,
+    p_quality: quality || null,
+    p_aspect_ratio: aspectRatio || null,
+    p_duration_seconds: durationSeconds ?? null,
     p_is_free: isFree,
     p_model: model,
     p_prompt: prompt,
@@ -327,11 +348,14 @@ function withDefaultSyncFields(job: Partial<GenerationJob>): GenerationJob {
     check_attempts: 0,
     client_request_id: null,
     completed_at: null,
+    aspect_ratio: null,
+    duration_seconds: null,
     expected_result_count: 1,
     expires_at: null,
     last_checked_at: null,
     last_sync_error: null,
     next_check_at: null,
+    quality: null,
     storage_urls: [],
     sync_locked_until: null,
     ...job,
@@ -348,6 +372,9 @@ function isMissingSyncColumnError(error: unknown) {
     message.includes("next_check_at") ||
     message.includes("expected_result_count") ||
     message.includes("expires_at") ||
+    message.includes("aspect_ratio") ||
+    message.includes("duration_seconds") ||
+    message.includes("quality") ||
     message.includes("storage_urls") ||
     message.includes("sync_locked_until")
   )

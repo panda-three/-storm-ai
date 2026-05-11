@@ -18,9 +18,12 @@ export interface LocalAccountData {
   membershipExpiresAt: string | null
   membershipFreeImageQualities: string[]
   membershipTier: MembershipTier | null
+  mustChangePassword: boolean
   projects: ProjectItem[]
   redeemedCodes: string[]
   role: "user" | "admin"
+  temporaryPasswordSetAt: string | null
+  temporaryPasswordSetBy: string | null
   userId: string
 }
 
@@ -31,9 +34,12 @@ export function createDefaultAccount(): LocalAccountData {
     membershipExpiresAt: null,
     membershipFreeImageQualities: [],
     membershipTier: null,
+    mustChangePassword: false,
     projects: [],
     redeemedCodes: [],
     role: "user",
+    temporaryPasswordSetAt: null,
+    temporaryPasswordSetBy: null,
     userId: `local_${Date.now().toString(36)}`,
   }
 }

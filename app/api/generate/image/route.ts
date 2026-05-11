@@ -164,6 +164,8 @@ export async function POST(request: Request) {
       model,
       prompt,
       provider,
+      quality,
+      aspectRatio: ratio,
       reason: billingReason,
       reference: billingReference,
       type: "image",

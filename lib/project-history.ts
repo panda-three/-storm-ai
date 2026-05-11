@@ -12,10 +12,12 @@ export interface ProjectItem {
   time: string
   clientRequestId?: string
   deletedAt?: string
+  duration?: string
   expectedCount?: number
   model?: string
   palette?: string
   prompt?: string
+  quality?: string
   imageUrls?: string[]
   previewLabel?: string
   previewUrl?: string
@@ -157,13 +159,28 @@ export function generationJobToProjectItem(job: GenerationJob): ProjectItem {
     model: job.model,
     palette: isImage ? "from-indigo-500 via-sky-400 to-emerald-300" : "from-slate-950 via-indigo-700 to-cyan-400",
     prompt: job.prompt,
+    quality: job.quality ?? undefined,
     expectedCount: job.expected_result_count,
     imageUrls: isImage ? resultUrls : [],
+    previewLabel: buildGenerationJobPreviewLabel(job),
     previewUrl: resultUrls[0] ?? "",
+    duration: job.duration_seconds ? `${job.duration_seconds} 秒` : undefined,
+    ratio: job.aspect_ratio ?? undefined,
     taskId: job.id,
     taskError: job.task_error ?? "",
     upstreamTaskId: job.upstream_task_id ?? undefined,
   })
+}
+
+function buildGenerationJobPreviewLabel(job: GenerationJob) {
+  const parts = [
+    job.type === "video" && job.duration_seconds ? `${job.duration_seconds} 秒` : "",
+    job.quality ? `清晰度：${job.quality}` : "",
+    job.aspect_ratio ?? "",
+    job.type === "image" ? `${job.expected_result_count} 张` : "",
+  ].filter(Boolean)
+
+  return parts.length > 0 ? parts.join(" · ") : undefined
 }
 
 export function mergeProjectHistories(serverProjects: ProjectItem[], localProjects: ProjectItem[]) {
@@ -199,6 +216,8 @@ export function mergeProjectHistories(serverProjects: ProjectItem[], localProjec
           imageUrls: mergeImageUrls(normalized, existing),
           previewLabel: existing.previewLabel ?? normalized.previewLabel,
           previewUrl: normalized.previewUrl || existing.previewUrl,
+          quality: normalized.quality ?? existing.quality,
+          ratio: normalized.ratio ?? existing.ratio,
           status: normalized.status,
           taskError: normalized.taskError,
           title: existing.title || normalized.title,
@@ -216,6 +235,8 @@ export function mergeProjectHistories(serverProjects: ProjectItem[], localProjec
           imageUrls: isServerBackedProjectItem(existing) ? mergeImageUrls(existing, normalized) : mergeImageUrls(normalized, existing),
           previewLabel: normalized.previewLabel ?? existing.previewLabel,
           previewUrl: isServerBackedProjectItem(existing) ? existing.previewUrl || normalized.previewUrl : normalized.previewUrl || existing.previewUrl,
+          quality: normalized.quality ?? existing.quality,
+          ratio: normalized.ratio ?? existing.ratio,
           taskError: isServerBackedProjectItem(existing) ? existing.taskError || normalized.taskError : normalized.taskError || existing.taskError,
           upstreamTaskId: existing.upstreamTaskId || normalized.upstreamTaskId,
         })

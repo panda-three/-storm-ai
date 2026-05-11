@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import Link from "next/link"
 import { AlertCircle, ArrowLeft, CheckCircle2 } from "lucide-react"
 import { AuthPanel } from "@/components/auth-panel"
+import { ForcedPasswordChange } from "@/components/forced-password-change"
 import { Button } from "@/components/ui/button"
 import { useAccountSession, getErrorMessage } from "@/hooks/use-account-session"
 import {
@@ -59,6 +60,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
     authReady,
     refreshAccount,
     setSyncError,
+    signOut,
     syncError,
     user,
     userId,
@@ -158,6 +160,10 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
         正在加载账户...
       </div>
     )
+  }
+
+  if (account.mustChangePassword) {
+    return <ForcedPasswordChange onChanged={refreshAccount} onSignOut={signOut} />
   }
 
   if (!isAdmin) {

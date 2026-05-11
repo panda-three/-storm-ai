@@ -2,8 +2,37 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import { fetchSafeRemoteResource, parseSafeRemoteUrl } from "@/lib/safe-fetch-url"
 
 export interface AuthenticatedRequestUser {
+  sessionId: string
   token: string
   userId: string
+}
+
+interface RequireAuthenticatedUserOptions {
+  allowPasswordChangeRequired?: boolean
+}
+
+export async function requireAdminUser(request: Request): Promise<AuthenticatedRequestUser> {
+  const auth = await requireAuthenticatedUser(request)
+  const { data, error } = await getSupabaseServerClient()
+    .from("user_accounts")
+    .select("role")
+    .eq("user_id", auth.userId)
+    .maybeSingle()
+
+  if (error) {
+    throw new Error(describeServerError(error, "读取管理员权限失败。"), { cause: error })
+  }
+
+  if (data?.role !== "admin") {
+    throw new Error("无管理员权限。")
+  }
+
+  return auth
+}
+
+interface SupabaseJwtPayload {
+  session_id?: unknown
+  sub?: unknown
 }
 
 let serviceClient: SupabaseClient | null = null
@@ -49,7 +78,10 @@ function getSupabaseUserAuthClient() {
   return userAuthClient
 }
 
-export async function requireAuthenticatedUser(request: Request): Promise<AuthenticatedRequestUser> {
+export async function requireAuthenticatedUser(
+  request: Request,
+  options: RequireAuthenticatedUserOptions = {}
+): Promise<AuthenticatedRequestUser> {
   const authorization = request.headers.get("authorization") ?? ""
   const token = authorization.match(/^Bearer\s+(.+)$/i)?.[1]?.trim()
 
@@ -68,9 +100,89 @@ export async function requireAuthenticatedUser(request: Request): Promise<Authen
     throw new Error("登录状态已失效，请重新登录。")
   }
 
+  const sessionId = getSessionIdFromAccessToken(token)
+  if (!sessionId) {
+    throw new Error("登录状态缺少会话标识，请重新登录。")
+  }
+
+  await assertActiveServerSession({
+    sessionId,
+    userId: data.user.id,
+  })
+
+  if (!options.allowPasswordChangeRequired) {
+    const { data: account, error: accountError } = await getSupabaseServerClient()
+      .from("user_accounts")
+      .select("must_change_password")
+      .eq("user_id", data.user.id)
+      .maybeSingle()
+
+    if (accountError) {
+      throw new Error(describeServerError(accountError, "读取账户安全状态失败。"), { cause: accountError })
+    }
+
+    if (account?.must_change_password) {
+      throw new Error("请先修改临时密码后再继续。")
+    }
+  }
+
   return {
+    sessionId,
     token,
     userId: data.user.id,
+  }
+}
+
+function getSessionIdFromAccessToken(token: string) {
+  const [, payload] = token.split(".")
+  if (!payload) return ""
+
+  try {
+    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/")
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=")
+    const json = Buffer.from(padded, "base64").toString("utf8")
+    const parsed = JSON.parse(json) as SupabaseJwtPayload
+
+    return typeof parsed.session_id === "string" ? parsed.session_id : ""
+  } catch {
+    return ""
+  }
+}
+
+async function assertActiveServerSession({
+  sessionId,
+  userId,
+}: {
+  sessionId: string
+  userId: string
+}) {
+  const supabase = getSupabaseServerClient()
+  const { data, error } = await supabase
+    .from("user_active_sessions")
+    .select("session_id, revoked_at")
+    .eq("user_id", userId)
+    .maybeSingle()
+
+  if (error) {
+    throw new Error(describeServerError(error, "读取登录设备状态失败。"), { cause: error })
+  }
+
+  if (!data || data.session_id !== sessionId || data.revoked_at) {
+    throw new Error("该账号已在其他设备登录或已被解除登录占用，请重新登录。")
+  }
+
+  const { error: updateError } = await supabase
+    .from("user_active_sessions")
+    .update({
+      last_seen_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("user_id", userId)
+    .eq("session_id", sessionId)
+    .is("revoked_at", null)
+
+  if (updateError) {
+    throw new Error(describeServerError(updateError, "更新登录设备状态失败。"), { cause: updateError })
   }
 }
 

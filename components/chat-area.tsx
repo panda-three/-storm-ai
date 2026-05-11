@@ -110,6 +110,7 @@ const sectionMeta: Record<
 }
 
 const imageDefaultRatioOption = "默认"
+export const regenerationDraftStorageKey = "storm-regeneration-draft"
 const imageCountOptions = ["1", "2", "3", "4"]
 const imageCountDropdownOptions = [
   { label: "1 张", value: "1" },
@@ -126,6 +127,62 @@ interface ReferenceImage {
   previewUrl: string
   size: number
   width: number
+}
+
+export interface RegenerationDraft {
+  type: "image" | "video"
+  prompt: string
+  model?: string
+  quality?: string
+  ratio?: string
+  imageCount?: number
+  duration?: string
+  aspectRatio?: string
+}
+
+function readRegenerationDraft() {
+  if (typeof window === "undefined") return null
+
+  try {
+    const rawDraft = window.sessionStorage.getItem(regenerationDraftStorageKey)
+    if (!rawDraft) return null
+
+    const draft = JSON.parse(rawDraft) as Partial<RegenerationDraft>
+    if ((draft.type !== "image" && draft.type !== "video") || typeof draft.prompt !== "string") return null
+    return draft as RegenerationDraft
+  } catch {
+    return null
+  }
+}
+
+function writeRegenerationDraft(draft: RegenerationDraft) {
+  if (typeof window === "undefined") return
+
+  window.sessionStorage.setItem(regenerationDraftStorageKey, JSON.stringify(draft))
+}
+
+function clearRegenerationDraft() {
+  if (typeof window === "undefined") return
+  window.sessionStorage.removeItem(regenerationDraftStorageKey)
+}
+
+function buildRegenerationDraftFromProject(item: ProjectItem): RegenerationDraft {
+  const draft: RegenerationDraft = {
+    type: item.type === "视频" ? "video" : "image",
+    prompt: item.prompt ?? "",
+    model: item.model,
+    quality: item.quality,
+  }
+
+  if (draft.type === "image") {
+    draft.ratio = item.ratio
+    draft.imageCount = item.expectedCount
+  } else {
+    draft.duration = item.duration
+    draft.aspectRatio = item.ratio
+  }
+
+  return draft
 }
 
 function getAssetExtension(url: string, fallback: string) {
@@ -875,9 +932,10 @@ export function ChatArea({
       model: result.model,
       palette: result.palette,
       prompt: result.prompt,
+      quality: result.quality,
       imageUrls: result.imageUrls,
       clientRequestId: result.clientRequestId,
-      previewLabel: `${result.quality} · ${result.ratio} · ${result.imageCount} 张`,
+      previewLabel: `清晰度：${result.quality} · ${result.ratio} · ${result.imageCount} 张`,
       previewUrl: result.imageUrl,
       expectedCount: result.imageCount,
       ratio: result.ratio,
@@ -897,10 +955,12 @@ export function ChatArea({
       model: result.model,
       palette: result.palette,
       prompt: result.prompt,
-      previewLabel: `${result.duration} · ${result.quality} · ${result.aspectRatio}`,
+      quality: result.quality,
+      previewLabel: `${result.duration} · 清晰度：${result.quality} · ${result.aspectRatio}`,
       previewUrl: result.videoUrl,
       expectedCount: 1,
       clientRequestId: result.clientRequestId,
+      duration: result.duration,
       ratio: result.aspectRatio,
       stage: result.status === "生成中" ? "智能创意中" : "",
       taskId: result.taskId,
@@ -1037,6 +1097,33 @@ function ImageWorkspace({
   })
   const membershipCoversQuality = isMembershipActive(membershipTier, membershipExpiresAt) && membershipFreeImageQualities.includes(quality)
   const estimatedCredits = currentPricing ? (membershipCoversQuality ? 0 : calculatePricingCredits(currentPricing) * parsedImageCount) : null
+
+  useEffect(() => {
+    const draft = readRegenerationDraft()
+    if (!draft || draft.type !== "image") return
+
+    clearRegenerationDraft()
+    setPrompt(draft.prompt)
+
+    const defaultModel = imageModelOptions[0]
+    const defaultSettings = imageModelSettings[defaultModel]
+    const defaultQuality = defaultSettings.qualities[1] ?? defaultSettings.qualities[0]
+    const defaultRatio = defaultSettings.ratios[0]
+    const nextModel = draft.model && imageModelOptions.includes(draft.model) ? draft.model : defaultModel
+    const settings = imageModelSettings[nextModel]
+    const nextQuality = draft.quality && settings.qualities.includes(draft.quality) ? draft.quality : defaultQuality
+    const nextRatioOptions = getImageRatiosForSelection(nextModel, nextQuality)
+    const nextRatio = draft.ratio && nextRatioOptions.includes(draft.ratio) ? draft.ratio : defaultRatio
+    const nextImageCount = draft.imageCount ? String(draft.imageCount) : imageCountOptions[2]
+
+    setModel(nextModel)
+    setQuality(nextQuality)
+    setRatio(nextRatio)
+    if (imageCountOptions.includes(nextImageCount)) {
+      setImageCount(nextImageCount)
+    }
+    window.requestAnimationFrame(() => promptRef.current?.focus())
+  }, [])
 
   const handlePromptChange = (value: string) => {
     setPrompt(value)
@@ -1466,6 +1553,28 @@ function VideoWorkspace({
     type: "video",
   })
   const estimatedCredits = currentPricing ? calculatePricingCredits(currentPricing) : null
+
+  useEffect(() => {
+    const draft = readRegenerationDraft()
+    if (!draft || draft.type !== "video") return
+
+    clearRegenerationDraft()
+    setPrompt(draft.prompt)
+
+    const defaultModel = videoModelOptions[0]
+    const defaultSettings = videoModelSettings[defaultModel]
+    const nextModel = draft.model && videoModelOptions.includes(draft.model) ? draft.model : defaultModel
+    const settings = videoModelSettings[nextModel]
+    const nextDuration = draft.duration && settings.durations.includes(draft.duration) ? draft.duration : defaultSettings.durations[0]
+    const nextQuality = draft.quality && settings.qualities.includes(draft.quality) ? draft.quality : defaultSettings.qualities[0]
+    const nextAspectRatio = draft.aspectRatio && settings.aspectRatios.includes(draft.aspectRatio) ? draft.aspectRatio : defaultSettings.aspectRatios[0]
+
+    setModel(nextModel)
+    setDuration(nextDuration)
+    setQuality(nextQuality)
+    setAspectRatio(nextAspectRatio)
+    window.requestAnimationFrame(() => promptRef.current?.focus())
+  }, [])
 
   useEffect(() => {
     if (!modelSettings.durations.includes(duration)) {
@@ -2193,7 +2302,14 @@ function HistoryDetailPanel({
           <Copy className="h-4 w-4" />
           复制提示词
         </Button>
-        <Button className="bg-white text-slate-700 hover:bg-slate-100 hover:text-slate-950" onClick={() => onSectionChange(item.type === "视频" ? "video" : "image")} variant="outline">
+        <Button
+          className="bg-white text-slate-700 hover:bg-slate-100 hover:text-slate-950"
+          onClick={() => {
+            writeRegenerationDraft(buildRegenerationDraftFromProject(item))
+            onSectionChange(item.type === "视频" ? "video" : "image")
+          }}
+          variant="outline"
+        >
           <RotateCcw className="h-4 w-4" />
           重新生成
         </Button>

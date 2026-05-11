@@ -16,8 +16,11 @@ import {
   type ProjectItem,
 } from "@/lib/project-history"
 import {
+  assertCurrentAuthSession,
+  claimCurrentAuthSession,
   getSupabaseClient,
   loadSupabaseAccount,
+  releaseCurrentAuthSession,
   saveSupabaseAccount,
 } from "@/lib/supabase"
 
@@ -52,9 +55,12 @@ function createAccountFromRemote(userId: string, remoteAccount: Awaited<ReturnTy
     membershipExpiresAt: remoteAccount?.membership_expires_at ?? null,
     membershipFreeImageQualities: remoteAccount?.membership_free_image_qualities ?? [],
     membershipTier: remoteAccount?.membership_tier ?? null,
+    mustChangePassword: remoteAccount?.must_change_password ?? false,
     projects: filterAccountCachedProjects(remoteAccount?.projects ?? []),
     redeemedCodes: remoteAccount?.redeemed_codes ?? [],
     role: remoteAccount?.role ?? "user",
+    temporaryPasswordSetAt: remoteAccount?.temporary_password_set_at ?? null,
+    temporaryPasswordSetBy: remoteAccount?.temporary_password_set_by ?? null,
     userId,
   }
 }
@@ -121,6 +127,20 @@ export function useAccountSession() {
         return
       }
 
+      if (data.session) {
+        try {
+          await claimCurrentAuthSession()
+        } catch (error) {
+          await clearLocalSupabaseSession(supabase)
+          if (!active) return
+
+          setSyncError(getErrorMessage(error, "登录设备校验失败，请重新登录。"))
+          setUser(null)
+          setAuthReady(true)
+          return
+        }
+      }
+
       setUser(data.session?.user ?? null)
       setAuthReady(true)
     }).catch(async (error) => {
@@ -142,6 +162,14 @@ export function useAccountSession() {
 
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === "TOKEN_REFRESHED") {
+        if (session) {
+          assertCurrentAuthSession().catch(async (error) => {
+            await clearLocalSupabaseSession(supabase)
+            setSyncError(getErrorMessage(error, "登录设备已失效，请重新登录。"))
+            setUser(null)
+            setAuthReady(true)
+          })
+        }
         setAuthReady(true)
         return
       }
@@ -150,6 +178,15 @@ export function useAccountSession() {
         setUser(null)
         setAuthReady(true)
         return
+      }
+
+      if (event === "SIGNED_IN" && session) {
+        claimCurrentAuthSession().catch(async (error) => {
+          await clearLocalSupabaseSession(supabase)
+          setSyncError(getErrorMessage(error, "登录设备校验失败，请重新登录。"))
+          setUser(null)
+          setAuthReady(true)
+        })
       }
 
       setUser((current) => {
@@ -169,6 +206,35 @@ export function useAccountSession() {
       data.subscription.unsubscribe()
     }
   }, [])
+
+  useEffect(() => {
+    if (!userId) return
+
+    let active = true
+    const supabase = getSupabaseClient()
+    if (!supabase) return
+
+    const validateActiveSession = () => {
+      assertCurrentAuthSession().catch(async (error) => {
+        if (!active) return
+
+        await clearLocalSupabaseSession(supabase)
+        if (!active) return
+
+        setSyncError(getErrorMessage(error, "登录设备已失效，请重新登录。"))
+        setUser(null)
+        setAccount(createDefaultAccount())
+        setAccountStatus("idle")
+      })
+    }
+
+    window.addEventListener("focus", validateActiveSession)
+
+    return () => {
+      active = false
+      window.removeEventListener("focus", validateActiveSession)
+    }
+  }, [userId])
 
   useEffect(() => {
     let active = true
@@ -279,6 +345,9 @@ export function useAccountSession() {
   const signOut = useCallback(async () => {
     const supabase = getSupabaseClient()
     if (supabase) {
+      await releaseCurrentAuthSession().catch((error) => {
+        setSyncError(getErrorMessage(error, "释放登录设备失败。"))
+      })
       const { error } = await supabase.auth.signOut()
       if (error && isInvalidRefreshTokenError(error)) {
         await clearLocalSupabaseSession(supabase)

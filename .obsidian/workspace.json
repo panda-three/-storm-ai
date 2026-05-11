@@ -11,10 +11,12 @@
             "id": "ed9d89daec125893",
             "type": "leaf",
             "state": {
-              "type": "empty",
-              "state": {},
+              "type": "vscode-editor",
+              "state": {
+                "file": "app/api/generate/image/route.ts"
+              },
               "icon": "lucide-file",
-              "title": "新标签页"
+              "title": "route"
             }
           }
         ]
@@ -177,25 +179,27 @@
       "bases:新建数据库": false
     }
   },
-  "active": "ed9d89daec125893",
+  "active": "8ec0b6e57e61c42e",
   "lastOpenFiles": [
+    "app/api/admin/users/[userId]/active-session/route.ts",
+    "app/api/admin/users/[userId]/active-session",
+    "components/forced-password-change.tsx",
+    "app/api/account/change-password/route.ts",
+    "app/api/account/change-password",
+    "app/api/account",
+    "app/api/admin/users/[userId]/temporary-password/route.ts",
+    "app/api/admin/users/[userId]/temporary-password",
+    "app/api/admin/users/[userId]",
+    "app/api/admin/users/route.ts",
+    "app/api/admin/users",
+    "docs/vercel-error-troubleshooting.md",
     "docs/storm-ai-conversation-index.md",
     "docs/storm-ai-conversations.md",
-    "scripts/export-codex-conversations.mjs",
-    "scripts",
-    "supabase-schema.sql",
     "release-checklist.md",
     "develop1.md",
     "需求文档.md",
     "AGENTS.md",
     "develop.md",
-    "app/admin/ledger/page.tsx",
-    "app/admin/users/page.tsx",
-    "app/admin/redeem-codes/page.tsx",
-    "app/admin/pricing/page.tsx",
-    "app/admin/packages/page.tsx",
-    "app/admin/customer-service/page.tsx",
-    "app/admin/layout.tsx",
     "docs/generation-queue-and-task-flow-research.md",
     "docs/vercel-usage-metrics.md"
   ]

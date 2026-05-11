@@ -9,12 +9,18 @@ create table if not exists public.user_accounts (
   ledger jsonb not null default '[]'::jsonb,
   redeemed_codes jsonb not null default '[]'::jsonb,
   role text not null default 'user' check (role in ('user', 'admin')),
+  must_change_password boolean not null default false,
+  temporary_password_set_at timestamptz,
+  temporary_password_set_by uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
 alter table public.user_accounts add column if not exists role text not null default 'user';
 alter table public.user_accounts add column if not exists username text;
+alter table public.user_accounts add column if not exists must_change_password boolean not null default false;
+alter table public.user_accounts add column if not exists temporary_password_set_at timestamptz;
+alter table public.user_accounts add column if not exists temporary_password_set_by uuid references auth.users(id) on delete set null;
 alter table public.user_accounts add column if not exists membership_tier text;
 alter table public.user_accounts add column if not exists membership_expires_at timestamptz;
 alter table public.user_accounts add column if not exists membership_free_image_qualities jsonb not null default '[]'::jsonb;
@@ -30,6 +36,211 @@ alter table public.user_accounts add constraint user_accounts_username_format_ch
 
 create unique index if not exists user_accounts_username_unique_idx on public.user_accounts (lower(username)) where username is not null;
 
+create table if not exists public.user_active_sessions (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  session_id text not null,
+  device_label text not null default '未知设备',
+  created_at timestamptz not null default now(),
+  last_seen_at timestamptz not null default now(),
+  revoked_at timestamptz,
+  revoked_reason text,
+  revoked_by uuid references auth.users(id) on delete set null,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.user_active_sessions add column if not exists session_id text;
+alter table public.user_active_sessions add column if not exists device_label text not null default '未知设备';
+alter table public.user_active_sessions add column if not exists created_at timestamptz not null default now();
+alter table public.user_active_sessions add column if not exists last_seen_at timestamptz not null default now();
+alter table public.user_active_sessions add column if not exists revoked_at timestamptz;
+alter table public.user_active_sessions add column if not exists revoked_reason text;
+alter table public.user_active_sessions add column if not exists revoked_by uuid references auth.users(id) on delete set null;
+alter table public.user_active_sessions add column if not exists updated_at timestamptz not null default now();
+
+create index if not exists user_active_sessions_session_id_idx on public.user_active_sessions (session_id);
+
+create or replace function public.current_auth_session_id()
+returns text
+language sql
+stable
+as $$
+  select nullif(auth.jwt() ->> 'session_id', '');
+$$;
+
+create or replace function public.is_current_active_session()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.user_active_sessions
+    where user_id = auth.uid()
+      and session_id = public.current_auth_session_id()
+      and revoked_at is null
+  );
+$$;
+
+create or replace function public.assert_current_active_session()
+returns void
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null or public.current_auth_session_id() is null then
+    raise exception '请先登录后再继续。';
+  end if;
+
+  if not public.is_current_active_session() then
+    raise exception '该账号已在其他设备登录或已被解除登录占用，请重新登录。';
+  end if;
+end;
+$$;
+
+create or replace function public.claim_current_auth_session(p_device_label text default null)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_session_id text := public.current_auth_session_id();
+  v_device_label text := left(coalesce(nullif(trim(p_device_label), ''), '未知设备'), 160);
+  v_existing public.user_active_sessions%rowtype;
+begin
+  if v_user_id is null or v_session_id is null then
+    raise exception '请先登录后再继续。';
+  end if;
+
+  select *
+  into v_existing
+  from public.user_active_sessions
+  where user_id = v_user_id
+  for update;
+
+  if not found then
+    insert into public.user_active_sessions (
+      user_id,
+      session_id,
+      device_label,
+      created_at,
+      last_seen_at,
+      updated_at
+    )
+    values (
+      v_user_id,
+      v_session_id,
+      v_device_label,
+      now(),
+      now(),
+      now()
+    );
+
+    return jsonb_build_object('ok', true, 'claimed', true);
+  end if;
+
+  if v_existing.session_id = v_session_id and v_existing.revoked_at is null then
+    update public.user_active_sessions
+    set
+      device_label = v_device_label,
+      last_seen_at = now(),
+      updated_at = now()
+    where user_id = v_user_id;
+
+    return jsonb_build_object('ok', true, 'claimed', false);
+  end if;
+
+  if v_existing.revoked_at is not null then
+    if v_existing.session_id = v_session_id then
+      raise exception '该登录会话已失效，请重新登录。';
+    end if;
+
+    update public.user_active_sessions
+    set
+      session_id = v_session_id,
+      device_label = v_device_label,
+      created_at = now(),
+      last_seen_at = now(),
+      revoked_at = null,
+      revoked_reason = null,
+      revoked_by = null,
+      updated_at = now()
+    where user_id = v_user_id;
+
+    return jsonb_build_object('ok', true, 'claimed', true);
+  end if;
+
+  raise exception '该账号已在其他设备登录，请先在原设备退出或联系管理员。';
+end;
+$$;
+
+create or replace function public.release_current_auth_session()
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_session_id text := public.current_auth_session_id();
+begin
+  if v_user_id is null or v_session_id is null then
+    return jsonb_build_object('ok', true, 'released', false);
+  end if;
+
+  update public.user_active_sessions
+  set
+    revoked_at = now(),
+    revoked_reason = 'user_signed_out',
+    revoked_by = v_user_id,
+    updated_at = now()
+  where user_id = v_user_id
+    and session_id = v_session_id
+    and revoked_at is null;
+
+  return jsonb_build_object('ok', true, 'released', found);
+end;
+$$;
+
+create or replace function public.admin_revoke_active_session(
+  p_user_id uuid,
+  p_reason text default 'admin_revoked'
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_actor uuid := auth.uid();
+  v_reason text := left(coalesce(nullif(trim(p_reason), ''), 'admin_revoked'), 160);
+begin
+  if not public.is_admin() then
+    raise exception '无管理员权限。';
+  end if;
+
+  if p_user_id is null then
+    raise exception '缺少用户 ID。';
+  end if;
+
+  update public.user_active_sessions
+  set
+    revoked_at = now(),
+    revoked_reason = v_reason,
+    revoked_by = v_actor,
+    updated_at = now()
+  where user_id = p_user_id
+    and revoked_at is null;
+
+  return jsonb_build_object('ok', true, 'revoked', found);
+end;
+$$;
+
 create or replace function public.is_admin()
 returns boolean
 language sql
@@ -42,7 +253,7 @@ as $$
     from public.user_accounts
     where user_id = auth.uid()
       and role = 'admin'
-  );
+  ) and public.is_current_active_session();
 $$;
 
 create or replace function public.is_username_available(p_username text)
@@ -187,6 +398,18 @@ alter table public.redeem_codes add constraint redeem_codes_package_shape_check 
 create index if not exists redeem_codes_status_idx on public.redeem_codes (status);
 create index if not exists redeem_codes_used_by_idx on public.redeem_codes (used_by);
 
+create table if not exists public.account_security_events (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  actor_user_id uuid references auth.users(id) on delete set null,
+  event_type text not null check (event_type in ('temporary_password_set', 'password_changed')),
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists account_security_events_user_id_idx on public.account_security_events (user_id, created_at desc);
+create index if not exists account_security_events_actor_user_id_idx on public.account_security_events (actor_user_id, created_at desc);
+
 create table if not exists public.model_pricing (
   id uuid primary key default gen_random_uuid(),
   model text not null,
@@ -213,6 +436,9 @@ create table if not exists public.generation_jobs (
   client_request_id text,
   expected_result_count integer not null default 1 check (expected_result_count between 1 and 4),
   expires_at timestamptz,
+  quality text,
+  aspect_ratio text,
+  duration_seconds integer,
   reference text not null unique,
   status text not null default 'submitted' check (status in ('submitted', 'processing', 'completed', 'failed', 'partial_completed')),
   upstream_task_id text,
@@ -238,6 +464,9 @@ alter table public.generation_jobs add column if not exists completed_at timesta
 alter table public.generation_jobs add column if not exists client_request_id text;
 alter table public.generation_jobs add column if not exists expected_result_count integer not null default 1;
 alter table public.generation_jobs add column if not exists expires_at timestamptz;
+alter table public.generation_jobs add column if not exists quality text;
+alter table public.generation_jobs add column if not exists aspect_ratio text;
+alter table public.generation_jobs add column if not exists duration_seconds integer;
 alter table public.generation_jobs add column if not exists storage_urls jsonb not null default '[]'::jsonb;
 alter table public.generation_jobs drop constraint if exists generation_jobs_status_check;
 alter table public.generation_jobs add constraint generation_jobs_status_check check (status in ('submitted', 'processing', 'completed', 'failed', 'partial_completed')) not valid;
@@ -250,6 +479,31 @@ update public.generation_jobs
 set expires_at = coalesce(completed_at, created_at) + interval '24 hours'
 where expires_at is null
   and status in ('completed', 'failed', 'partial_completed');
+
+update public.generation_jobs as job
+set
+  quality = coalesce(job.quality, parsed.quality),
+  aspect_ratio = coalesce(job.aspect_ratio, parsed.aspect_ratio),
+  duration_seconds = coalesce(job.duration_seconds, parsed.duration_seconds)
+from (
+  select
+    generation_jobs.id,
+    case when generation_jobs.type = 'image' then nullif(trim(parts.items[3]), '') else nullif(trim(parts.items[4]), '') end as quality,
+    case when generation_jobs.type = 'video' then nullif(trim(parts.items[5]), '') else null end as aspect_ratio,
+    case when generation_jobs.type = 'video' then nullif(regexp_replace(parts.items[3], '\D', '', 'g'), '')::integer else null end as duration_seconds
+  from public.generation_jobs
+  join public.user_accounts on user_accounts.user_id = generation_jobs.user_id
+  cross join lateral (
+    select regexp_split_to_array(ledger_item->>'code', '\s*·\s*') as items
+    from jsonb_array_elements(user_accounts.ledger) as ledger_item
+    where ledger_item->>'id' = generation_jobs.reference
+    limit 1
+  ) as parts
+  where generation_jobs.quality is null
+     or generation_jobs.aspect_ratio is null
+     or generation_jobs.duration_seconds is null
+) as parsed
+where parsed.id = job.id;
 
 create index if not exists generation_jobs_user_id_idx on public.generation_jobs (user_id, created_at desc);
 create index if not exists generation_jobs_upstream_task_id_idx on public.generation_jobs (upstream_task_id);
@@ -322,16 +576,33 @@ on conflict (key) do nothing;
 alter table public.user_accounts enable row level security;
 alter table public.credit_packages enable row level security;
 alter table public.redeem_codes enable row level security;
+alter table public.account_security_events enable row level security;
 alter table public.model_pricing enable row level security;
 alter table public.generation_jobs enable row level security;
 alter table public.site_settings enable row level security;
+alter table public.user_active_sessions enable row level security;
+
+drop policy if exists "Users can read own active session" on public.user_active_sessions;
+create policy "Users can read own active session"
+on public.user_active_sessions
+for select
+to authenticated
+using (auth.uid() = user_id or public.is_admin());
+
+drop policy if exists "Admins can manage active sessions" on public.user_active_sessions;
+create policy "Admins can manage active sessions"
+on public.user_active_sessions
+for all
+to authenticated
+using (public.is_admin())
+with check (public.is_admin());
 
 drop policy if exists "Users can read own account" on public.user_accounts;
 create policy "Users can read own account"
 on public.user_accounts
 for select
 to authenticated
-using (auth.uid() = user_id or public.is_admin());
+using ((auth.uid() = user_id and public.is_current_active_session()) or public.is_admin());
 
 drop policy if exists "Users can insert own account" on public.user_accounts;
 drop policy if exists "Admins can insert accounts" on public.user_accounts;
@@ -355,7 +626,7 @@ create policy "Authenticated users can read enabled packages"
 on public.credit_packages
 for select
 to authenticated
-using (enabled = true or public.is_admin());
+using ((enabled = true and public.is_current_active_session()) or public.is_admin());
 
 drop policy if exists "Admins can manage packages" on public.credit_packages;
 create policy "Admins can manage packages"
@@ -370,7 +641,7 @@ create policy "Users can read own used redeem codes"
 on public.redeem_codes
 for select
 to authenticated
-using (used_by = auth.uid() or public.is_admin());
+using ((used_by = auth.uid() and public.is_current_active_session()) or public.is_admin());
 
 drop policy if exists "Admins can manage redeem codes" on public.redeem_codes;
 create policy "Admins can manage redeem codes"
@@ -380,12 +651,26 @@ to authenticated
 using (public.is_admin())
 with check (public.is_admin());
 
+drop policy if exists "Users can read own security events" on public.account_security_events;
+create policy "Users can read own security events"
+on public.account_security_events
+for select
+to authenticated
+using ((auth.uid() = user_id and public.is_current_active_session()) or public.is_admin());
+
+drop policy if exists "Admins can insert security events" on public.account_security_events;
+create policy "Admins can insert security events"
+on public.account_security_events
+for insert
+to authenticated
+with check (public.is_admin());
+
 drop policy if exists "Authenticated users can read enabled model pricing" on public.model_pricing;
 create policy "Authenticated users can read enabled model pricing"
 on public.model_pricing
 for select
 to authenticated
-using (enabled = true or public.is_admin());
+using ((enabled = true and public.is_current_active_session()) or public.is_admin());
 
 drop policy if exists "Admins can manage model pricing" on public.model_pricing;
 create policy "Admins can manage model pricing"
@@ -400,7 +685,7 @@ create policy "Users can read own generation jobs"
 on public.generation_jobs
 for select
 to authenticated
-using (auth.uid() = user_id or public.is_admin());
+using ((auth.uid() = user_id and public.is_current_active_session()) or public.is_admin());
 
 drop policy if exists "Admins can manage generation jobs" on public.generation_jobs;
 create policy "Admins can manage generation jobs"
@@ -415,7 +700,7 @@ create policy "Authenticated users can read site settings"
 on public.site_settings
 for select
 to authenticated
-using (true);
+using (public.is_current_active_session());
 
 drop policy if exists "Admins can manage site settings" on public.site_settings;
 create policy "Admins can manage site settings"
@@ -444,6 +729,8 @@ begin
   if v_user_id is null then
     raise exception '请先登录后再兑换。';
   end if;
+
+  perform public.assert_current_active_session();
 
   if v_code = '' then
     raise exception '请输入兑换码。';
@@ -585,6 +872,8 @@ begin
     raise exception '请先登录后再保存历史项目。';
   end if;
 
+  perform public.assert_current_active_session();
+
   if jsonb_typeof(coalesce(p_projects, '[]'::jsonb)) <> 'array' then
     raise exception '历史项目格式不正确。';
   end if;
@@ -650,6 +939,8 @@ begin
   if v_user_id is null then
     raise exception '请先登录后再生成。';
   end if;
+
+  perform public.assert_current_active_session();
 
   if p_amount <= 0 then
     raise exception '扣费点数必须大于 0。';
@@ -717,6 +1008,8 @@ begin
   if v_user_id is null then
     raise exception '请先登录后再退款。';
   end if;
+
+  perform public.assert_current_active_session();
 
   if p_amount <= 0 then
     raise exception '退款点数必须大于 0。';
@@ -979,6 +1272,9 @@ create or replace function public.create_generation_job_with_billing(
   p_model text,
   p_prompt text,
   p_expected_result_count integer,
+  p_quality text default null,
+  p_aspect_ratio text default null,
+  p_duration_seconds integer default null,
   p_is_free boolean default false,
   p_client_request_id text default null
 )
@@ -1063,6 +1359,9 @@ begin
     amount,
     client_request_id,
     expected_result_count,
+    quality,
+    aspect_ratio,
+    duration_seconds,
     model,
     prompt,
     provider,
@@ -1075,6 +1374,9 @@ begin
     case when p_is_free then 0 else p_amount end,
     v_client_request_id,
     p_expected_result_count,
+    nullif(trim(coalesce(p_quality, '')), ''),
+    nullif(trim(coalesce(p_aspect_ratio, '')), ''),
+    p_duration_seconds,
     p_model,
     p_prompt,
     p_provider,
@@ -1168,16 +1470,23 @@ $$;
 
 grant execute on function public.redeem_credit_code(text) to authenticated;
 grant execute on function public.is_username_available(text) to anon, authenticated;
+grant execute on function public.current_auth_session_id() to authenticated;
+grant execute on function public.is_current_active_session() to authenticated;
+grant execute on function public.assert_current_active_session() to authenticated;
+grant execute on function public.claim_current_auth_session(text) to authenticated;
+grant execute on function public.release_current_auth_session() to authenticated;
+grant execute on function public.admin_revoke_active_session(uuid, text) to authenticated;
 grant execute on function public.save_user_projects(jsonb) to authenticated;
-grant execute on function public.spend_credits(integer, text, text) to authenticated;
+revoke execute on function public.spend_credits(integer, text, text) from public, anon, authenticated;
 revoke execute on function public.refund_credits(integer, text, text) from public, anon, authenticated;
 revoke execute on function public.spend_generation_credits(uuid, integer, text, text) from public, anon, authenticated;
 revoke execute on function public.record_free_generation_usage(uuid, text, text) from public, anon, authenticated;
 revoke execute on function public.refund_generation_credits(uuid, integer, text, text) from public, anon, authenticated;
 revoke execute on function public.create_generation_job_with_billing(uuid, integer, text, text, text, text, text, text, integer, boolean, text) from public, anon, authenticated;
+revoke execute on function public.create_generation_job_with_billing(uuid, integer, text, text, text, text, text, text, integer, text, text, integer, boolean, text) from public, anon, authenticated;
 revoke execute on function public.fail_generation_job_with_refund(uuid, text) from public, anon, authenticated;
 grant execute on function public.spend_generation_credits(uuid, integer, text, text) to service_role;
 grant execute on function public.record_free_generation_usage(uuid, text, text) to service_role;
 grant execute on function public.refund_generation_credits(uuid, integer, text, text) to service_role;
-grant execute on function public.create_generation_job_with_billing(uuid, integer, text, text, text, text, text, text, integer, boolean, text) to service_role;
+grant execute on function public.create_generation_job_with_billing(uuid, integer, text, text, text, text, text, text, integer, text, text, integer, boolean, text) to service_role;
 grant execute on function public.fail_generation_job_with_refund(uuid, text) to service_role;

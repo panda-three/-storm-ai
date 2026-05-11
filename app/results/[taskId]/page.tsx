@@ -18,6 +18,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react"
 import { AuthPanel } from "@/components/auth-panel"
+import { regenerationDraftStorageKey, type RegenerationDraft } from "@/components/chat-area"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { getErrorMessage, useAccountSession } from "@/hooks/use-account-session"
@@ -107,6 +108,10 @@ function downloadVideoDirect(url: string, filename: string) {
 
 function openAsset(url: string) {
   window.open(url, "_blank", "noopener,noreferrer")
+}
+
+function writeRegenerationDraft(draft: RegenerationDraft) {
+  window.sessionStorage.setItem(regenerationDraftStorageKey, JSON.stringify(draft))
 }
 
 async function copyText(text: string) {
@@ -232,6 +237,9 @@ export default function TaskResultPage() {
 
   const prompt = task?.raw?.prompt ?? ""
   const model = task?.raw?.model ?? "未记录模型"
+  const quality = task?.raw?.quality ?? undefined
+  const aspectRatio = task?.raw?.aspect_ratio ?? undefined
+  const duration = task?.raw?.duration_seconds ? `${task.raw.duration_seconds} 秒` : undefined
   const createdAt = task?.raw?.created_at ? formatLedgerDateTime(task.raw.created_at) : "刚刚"
   const expectedImageCount = Math.max(
     Number(task?.raw?.expected_result_count ?? 0) || 0,
@@ -271,6 +279,16 @@ export default function TaskResultPage() {
   }
 
   const handleRegenerate = () => {
+    writeRegenerationDraft({
+      type: projectType === "视频" ? "video" : "image",
+      prompt,
+      model: task?.raw?.model,
+      quality,
+      ratio: projectType === "生图" ? aspectRatio : undefined,
+      imageCount: projectType === "生图" ? galleryImageCount : undefined,
+      duration,
+      aspectRatio: projectType === "视频" ? aspectRatio : undefined,
+    })
     router.push(`/?section=${projectType === "视频" ? "video" : "image"}`)
   }
 

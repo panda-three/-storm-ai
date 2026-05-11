@@ -4,6 +4,7 @@ import { Suspense, useCallback, useEffect, useState } from "react"
 import { useSearchParams } from "next/navigation"
 import { AuthPanel } from "@/components/auth-panel"
 import { ChatArea } from "@/components/chat-area"
+import { ForcedPasswordChange } from "@/components/forced-password-change"
 import { Sidebar } from "@/components/sidebar"
 import { useAccountSession, getErrorMessage } from "@/hooks/use-account-session"
 import type { WorkspaceSection } from "@/lib/workspace-section"
@@ -191,6 +192,10 @@ function HomeContent() {
         正在加载账户...
       </div>
     )
+  }
+
+  if (account.mustChangePassword) {
+    return <ForcedPasswordChange onChanged={refreshAccount} onSignOut={signOut} />
   }
 
   return (

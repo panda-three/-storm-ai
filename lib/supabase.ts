@@ -10,9 +10,12 @@ export interface SupabaseAccountRow {
   membership_expires_at: string | null
   membership_free_image_qualities: string[] | null
   membership_tier: MembershipTier | null
+  must_change_password: boolean
   projects: LocalAccountData["projects"]
   redeemed_codes: string[]
   role: "user" | "admin"
+  temporary_password_set_at: string | null
+  temporary_password_set_by: string | null
   user_id: string
   username: string | null
 }
@@ -64,12 +67,37 @@ export interface ModelPricing {
 }
 
 export interface AdminAccountSummary {
+  active_session_created_at: string | null
+  active_session_device_label: string | null
+  active_session_last_seen_at: string | null
+  active_session_revoked_at: string | null
+  active_session_revoked_reason: string | null
+  credit_balance: number
+  email: string | null
+  email_confirmed_at: string | null
+  ledger: LocalAccountData["ledger"]
+  membership_expires_at: string | null
+  membership_free_image_qualities: string[] | null
+  membership_tier: MembershipTier | null
+  must_change_password: boolean
+  role: "user" | "admin"
+  temporary_password_set_at: string | null
+  temporary_password_set_by: string | null
+  updated_at: string
+  user_id: string
+  username: string | null
+}
+
+export interface AdminAccountRow {
   credit_balance: number
   ledger: LocalAccountData["ledger"]
   membership_expires_at: string | null
   membership_free_image_qualities: string[] | null
   membership_tier: MembershipTier | null
+  must_change_password: boolean
   role: "user" | "admin"
+  temporary_password_set_at: string | null
+  temporary_password_set_by: string | null
   updated_at: string
   user_id: string
   username: string | null
@@ -82,13 +110,6 @@ export interface RedeemResult {
   membership_expires_at?: string
   membership_free_image_qualities?: string[]
   membership_tier?: MembershipTier
-}
-
-export interface CreditTransactionResult {
-  amount: number
-  already_refunded?: boolean
-  credit_balance: number
-  reference: string
 }
 
 const defaultCustomerServiceSettings: CustomerServiceSettings = {
@@ -116,13 +137,69 @@ export function isSupabaseConfigured() {
   return Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
 }
 
+export function getDeviceLabel() {
+  if (typeof navigator === "undefined") return "未知设备"
+
+  const platform = navigator.platform || "未知系统"
+  const browser = navigator.userAgent.includes("Edg/")
+    ? "Edge"
+    : navigator.userAgent.includes("Chrome/")
+      ? "Chrome"
+      : navigator.userAgent.includes("Safari/")
+        ? "Safari"
+        : navigator.userAgent.includes("Firefox/")
+          ? "Firefox"
+          : "浏览器"
+
+  return `${browser} · ${platform}`.slice(0, 160)
+}
+
+export async function claimCurrentAuthSession() {
+  const supabase = getSupabaseClient()
+  if (!supabase) throw new Error("Supabase 未配置。")
+
+  const { error } = await supabase.rpc("claim_current_auth_session", {
+    p_device_label: getDeviceLabel(),
+  })
+
+  if (error) throw error
+}
+
+export async function releaseCurrentAuthSession() {
+  const supabase = getSupabaseClient()
+  if (!supabase) return
+
+  const { error } = await supabase.rpc("release_current_auth_session")
+  if (error) throw error
+}
+
+export async function assertCurrentAuthSession() {
+  const supabase = getSupabaseClient()
+  if (!supabase) throw new Error("Supabase 未配置。")
+
+  const { error } = await supabase.rpc("assert_current_active_session")
+  if (error) throw error
+}
+
+export async function revokeUserActiveSession(userId: string) {
+  const supabase = getSupabaseClient()
+  if (!supabase) throw new Error("Supabase 未配置。")
+
+  const { error } = await supabase.rpc("admin_revoke_active_session", {
+    p_reason: "admin_revoked",
+    p_user_id: userId,
+  })
+
+  if (error) throw error
+}
+
 export async function loadSupabaseAccount(userId: string): Promise<SupabaseAccountRow | null> {
   const supabase = getSupabaseClient()
   if (!supabase) return null
 
   const { data, error } = await supabase
     .from("user_accounts")
-    .select("user_id, username, credit_balance, projects, ledger, redeemed_codes, role, membership_tier, membership_expires_at, membership_free_image_qualities")
+    .select("user_id, username, credit_balance, projects, ledger, redeemed_codes, role, membership_tier, membership_expires_at, membership_free_image_qualities, must_change_password, temporary_password_set_at, temporary_password_set_by")
     .eq("user_id", userId)
     .maybeSingle()
 
@@ -135,15 +212,24 @@ export async function loadAdminAccounts(): Promise<AdminAccountSummary[]> {
   const supabase = getSupabaseClient()
   if (!supabase) return []
 
-  const { data, error } = await supabase
-    .from("user_accounts")
-    .select("user_id, username, credit_balance, ledger, role, updated_at, membership_tier, membership_expires_at, membership_free_image_qualities")
-    .order("updated_at", { ascending: false })
-    .limit(100)
-
+  const { data, error } = await supabase.auth.getSession()
   if (error) throw error
 
-  return (data ?? []) as AdminAccountSummary[]
+  const token = data.session?.access_token
+  if (!token) return []
+
+  const response = await fetch("/api/admin/users", {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  })
+  const payload = await response.json().catch(() => ({}))
+
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.error || "加载用户列表失败。")
+  }
+
+  return (Array.isArray(payload.accounts) ? payload.accounts : []) as AdminAccountSummary[]
 }
 
 export async function saveSupabaseAccount(account: LocalAccountData) {
@@ -324,50 +410,4 @@ export async function saveModelPricing(pricing: Omit<ModelPricing, "id"> & { id?
 
 export function calculatePricingCredits(pricing: Pick<ModelPricing, "cost_cny" | "markup">) {
   return Math.ceil(pricing.cost_cny * pricing.markup * 100)
-}
-
-export async function spendCredits({
-  amount,
-  reason,
-  reference,
-}: {
-  amount: number
-  reason: string
-  reference: string
-}): Promise<CreditTransactionResult> {
-  const supabase = getSupabaseClient()
-  if (!supabase) throw new Error("Supabase 未配置。")
-
-  const { data, error } = await supabase.rpc("spend_credits", {
-    p_amount: amount,
-    p_reason: reason,
-    p_reference: reference,
-  })
-
-  if (error) throw error
-
-  return data as CreditTransactionResult
-}
-
-export async function refundCredits({
-  amount,
-  reason,
-  reference,
-}: {
-  amount: number
-  reason: string
-  reference: string
-}): Promise<CreditTransactionResult> {
-  const supabase = getSupabaseClient()
-  if (!supabase) throw new Error("Supabase 未配置。")
-
-  const { data, error } = await supabase.rpc("refund_credits", {
-    p_amount: amount,
-    p_reason: reason,
-    p_reference: reference,
-  })
-
-  if (error) throw error
-
-  return data as CreditTransactionResult
 }
