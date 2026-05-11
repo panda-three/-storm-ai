@@ -29,7 +29,10 @@ function visibleProjects(projects: ProjectItem[]) {
 }
 
 function isSameProject(a: ProjectItem, b: ProjectItem) {
-  return a.id === b.id || Boolean(a.taskId && a.taskId === b.taskId)
+  return (
+    a.id === b.id ||
+    Boolean((a.taskId && a.taskId === b.taskId) || (a.clientRequestId && a.clientRequestId === b.clientRequestId))
+  )
 }
 
 export default function Home() {

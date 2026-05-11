@@ -15,7 +15,7 @@ import {
 } from "@/lib/generation-jobs"
 import { getTaskStatus } from "@/lib/apimart"
 import { getMengfactoryVideoTaskStatus } from "@/lib/mengfactory"
-import { shouldSyncJobNow, syncApimartGenerationJob } from "@/lib/apimart-task-sync"
+import { syncApimartGenerationJob } from "@/lib/apimart-task-sync"
 import { requireAuthenticatedUser } from "@/lib/server-supabase"
 
 export async function GET(
@@ -55,7 +55,19 @@ export async function GET(
     }
 
     if (recoveredJob.provider === "mengfactory") {
-      const result = await getMengfactoryVideoTaskStatus(recoveredJob.upstream_task_id)
+      const result = await getMengfactoryVideoTaskStatus(recoveredJob.upstream_task_id).catch(async (error) => {
+        const message = error instanceof Error ? error.message : "任务状态查询失败。"
+        return updateActiveGenerationJob(recoveredJob.id, {
+          last_checked_at: new Date().toISOString(),
+          last_sync_error: message,
+          sync_locked_until: null,
+        })
+      })
+
+      if (!result || "id" in result) {
+        return NextResponse.json(normalizeJobTaskStatus(result ?? recoveredJob))
+      }
+
       const resultUrls = result.videoUrl ? [result.videoUrl] : []
       const taskError = result.taskError || (result.status === "completed" && resultUrls.length === 0 ? "任务已完成，但接口没有返回视频地址。" : "")
       const status = taskError && result.status === "completed" ? "failed" : result.status
@@ -84,11 +96,7 @@ export async function GET(
       return NextResponse.json(normalizeJobTaskStatus(nextJob ?? recoveredJob))
     }
 
-    if (!shouldSyncJobNow(recoveredJob)) {
-      return NextResponse.json(normalizeJobTaskStatus(recoveredJob))
-    }
-
-    const result = await syncApimartGenerationJob(recoveredJob)
+    const result = await syncApimartGenerationJob(recoveredJob, { mode: "interactive" })
     return NextResponse.json(normalizeJobTaskStatus(result.job))
   } catch (error) {
     const message = error instanceof Error ? error.message : "任务状态查询失败。"

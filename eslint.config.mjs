@@ -6,7 +6,16 @@ import tseslint from "typescript-eslint"
 
 export default tseslint.config(
   {
-    ignores: [".next/**", ".obsidian/**", "node_modules/**", "next-env.d.ts"],
+    ignores: [
+      ".next/**",
+      ".obsidian/**",
+      "docs/storm-ai-conversations/**",
+      "docs/storm-ai-conversation-index.md",
+      "docs/storm-ai-conversations.md",
+      "node_modules/**",
+      "next-env.d.ts",
+      "scripts/export-codex-conversations.mjs",
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

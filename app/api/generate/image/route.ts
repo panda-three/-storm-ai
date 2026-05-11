@@ -3,6 +3,7 @@ import {
   createGenerationJobWithBilling,
   failGenerationJobWithRefund,
   getGenerationJobExpiresAt,
+  updateGenerationJob,
   updateActiveGenerationJob,
   type GenerationJobStatus,
 } from "@/lib/generation-jobs"
@@ -32,12 +33,16 @@ const supportedReferenceImageTypes = ["image/jpeg", "image/png", "image/webp"]
 
 export async function POST(request: Request) {
   let billingReason = ""
+  let clientRequestId = ""
   let jobId = ""
+  let stage = "authenticate"
+  let upstreamTaskId = ""
   let userId = ""
 
   try {
     const auth = await requireAuthenticatedUser(request)
     userId = auth.userId
+    stage = "parse_input"
     const contentType = request.headers.get("content-type") ?? ""
     const body = contentType.includes("multipart/form-data") ? await request.formData() : await request.json()
     const getValue = (key: string) => (body instanceof FormData ? body.get(key) : body[key])
@@ -51,7 +56,7 @@ export async function POST(request: Request) {
     const quality = String(getValue("quality") ?? "2K")
     const ratio = String(getValue("ratio") ?? "1:1")
     const imageCount = parseImageCount(getValue("imageCount"))
-    const clientRequestId = String(getValue("clientRequestId") ?? "").trim()
+    clientRequestId = String(getValue("clientRequestId") ?? "").trim()
     const referenceImages = body instanceof FormData ? body.getAll("referenceImages").filter(isImageFile) : []
 
     if (!isValidImageRatioForQuality(model, quality, ratio)) {
@@ -64,8 +69,10 @@ export async function POST(request: Request) {
       )
     }
 
+    stage = "validate_reference_images"
     validateReferenceImages(referenceImages)
 
+    stage = "load_pricing"
     const pricing = await loadImagePricing({ model, quality })
     if (!pricing) {
       return NextResponse.json({ ok: false, error: "当前模型参数未配置价格，请联系管理员配置后再生成。" }, { status: 400 })
@@ -74,6 +81,7 @@ export async function POST(request: Request) {
     let billingAmount = calculatePricingCredits(pricing) * imageCount
     const billingReference = `generate_image_${Date.now()}_${crypto.randomUUID()}`
     billingReason = `AI 生图 · ${model} · ${quality} · ${imageCount} 张`
+    stage = "load_membership"
     const membershipCoversQuality = await hasActiveImageMembership({
       quality,
       userId,
@@ -97,6 +105,20 @@ export async function POST(request: Request) {
       billingReason = `${billingReason} · 会员免费`
     }
 
+    const isMengfactoryImage = isMengfactoryGeminiImageModel(model)
+    const provider = isMengfactoryImage ? "mengfactory" : "apimart"
+    const referenceBuffers = isMengfactoryImage
+      ? await prepareMengfactoryReferenceImages(referenceImages, () => {
+          stage = "prepare_mengfactory_references"
+        })
+      : []
+    const apimartReferenceImageUrls = isMengfactoryImage
+      ? []
+      : await uploadApimartReferenceImages(referenceImages, () => {
+          stage = "upload_apimart_references"
+        })
+
+    stage = "create_generation_job_with_billing"
     const job = await createGenerationJobWithBilling({
       amount: billingAmount,
       clientRequestId,
@@ -104,7 +126,7 @@ export async function POST(request: Request) {
       isFree,
       model,
       prompt,
-      provider: isMengfactoryGeminiImageModel(model) ? "mengfactory" : "apimart",
+      provider,
       reason: billingReason,
       reference: billingReference,
       type: "image",
@@ -112,13 +134,8 @@ export async function POST(request: Request) {
     })
     jobId = job.id
 
-    if (isMengfactoryGeminiImageModel(model)) {
-      const referenceBuffers = await Promise.all(
-        referenceImages.map(async (image) => ({
-          buffer: Buffer.from(await image.arrayBuffer()),
-          mimeType: image.type,
-        }))
-      )
+    if (isMengfactoryImage) {
+      stage = "submit_mengfactory_generation"
       const generatedImages = await Promise.allSettled(
         Array.from({ length: imageCount }, () =>
           createMengfactoryImage({
@@ -136,6 +153,7 @@ export async function POST(request: Request) {
       const imageUrls: string[] = []
 
       try {
+        stage = "persist_mengfactory_results"
         for (const generated of successfulImages) {
           const uploaded = await uploadGeneratedImage({
             buffer: generated.buffer,
@@ -146,7 +164,7 @@ export async function POST(request: Request) {
         }
 
         if (imageUrls.length === 0) {
-          throw new Error("图片生成失败，未返回可用结果。")
+          throw new Error(buildAllSettledFailureMessage(generatedImages, "图片生成失败，未返回可用结果。"))
         }
 
         const status: GenerationJobStatus = imageUrls.length < imageCount ? "partial_completed" : "completed"
@@ -156,9 +174,11 @@ export async function POST(request: Request) {
                 amount: billingAmount,
                 expectedResultCount: imageCount,
                 successCount: imageUrls.length,
+                upstreamErrors: summarizeSettledErrors(generatedImages),
               })
             : null
 
+        stage = "complete_mengfactory_job"
         const completedAt = new Date().toISOString()
         const nextJob = await updateActiveGenerationJob(job.id, {
           completed_at: completedAt,
@@ -201,19 +221,8 @@ export async function POST(request: Request) {
       }
     }
 
-    const imageUrls = (
-      await Promise.all(
-        referenceImages.map(async (image) =>
-          uploadApimartImage({
-            buffer: Buffer.from(await image.arrayBuffer()),
-            filename: image.name,
-            mimeType: image.type,
-          })
-        )
-      )
-    ).filter(Boolean)
     const generationInput = {
-      imageUrls,
+      imageUrls: apimartReferenceImageUrls,
       model,
       prompt,
       imageCount,
@@ -222,7 +231,10 @@ export async function POST(request: Request) {
     }
     logGenerateImage("generation input", generationInput)
 
+    stage = "submit_apimart_generation"
     const result = await createImageGeneration(generationInput)
+    upstreamTaskId = result.taskId
+    stage = "link_apimart_task"
     const nextJob = await updateActiveGenerationJob(job.id, {
       next_check_at: new Date(Date.now() + 5000).toISOString(),
       status: result.status === "submitted" ? "submitted" : "processing",
@@ -243,24 +255,49 @@ export async function POST(request: Request) {
     })
   } catch (error) {
     const message = describeServerError(error, "生图任务提交失败。")
+    const failureMessage = buildFailureMessage({ message, stage, upstreamTaskId })
     logGenerateImage("error", {
       cause: error instanceof Error && error.cause ? describeServerError(error.cause, "") : "",
       jobId,
-      message,
+      message: failureMessage,
+      stage,
+      upstreamTaskId,
       userId: maskId(userId),
     })
 
     if (jobId) {
+      if (upstreamTaskId) {
+        const recoveredJob = await recoverSubmittedApimartJob({
+          clientRequestId,
+          failureMessage,
+          jobId,
+          upstreamTaskId,
+        }).catch(() => null)
+
+        if (recoveredJob) {
+          return NextResponse.json({
+            ok: true,
+            mode: "apimart",
+            status: recoveredJob.status,
+            taskId: recoveredJob.id,
+            upstreamTaskId,
+            type: "image",
+            clientRequestId,
+            taskError: failureMessage,
+          })
+        }
+      }
+
       await failGenerationJobWithRefund({
         jobId,
-        reason: `${billingReason || "AI 生图"}提交失败退款：${message}`,
+        reason: `${billingReason || "AI 生图"}提交失败退款：${failureMessage}`,
       }).catch(() => undefined)
     }
 
     return NextResponse.json(
       {
         ok: false,
-        error: message,
+        error: failureMessage,
       },
       { status: message.includes("登录") ? 401 : 500 }
     )
@@ -291,15 +328,110 @@ function buildPartialImageMessage({
   amount,
   expectedResultCount,
   successCount,
+  upstreamErrors = [],
 }: {
   amount: number
   expectedResultCount: number
   successCount: number
+  upstreamErrors?: string[]
 }) {
   const failedCount = Math.max(0, expectedResultCount - successCount)
   const refundAmount = calculatePartialRefundAmount(amount, successCount, expectedResultCount)
   const refundText = refundAmount > 0 ? `已退还 ${refundAmount.toLocaleString()} 点。` : "本次未扣点，无需退款。"
-  return `已生成 ${successCount}/${expectedResultCount} 张，失败 ${failedCount} 张，${refundText}`
+  const errorText = upstreamErrors.length > 0 ? `失败原因：${upstreamErrors.join("；")}` : ""
+  return [`已生成 ${successCount}/${expectedResultCount} 张，失败 ${failedCount} 张，${refundText}`, errorText]
+    .filter(Boolean)
+    .join(" ")
+}
+
+async function prepareMengfactoryReferenceImages(referenceImages: File[], setStage: () => void) {
+  if (referenceImages.length === 0) return []
+
+  setStage()
+  return Promise.all(
+    referenceImages.map(async (image) => ({
+      buffer: Buffer.from(await image.arrayBuffer()),
+      mimeType: image.type,
+    }))
+  )
+}
+
+async function uploadApimartReferenceImages(referenceImages: File[], setStage: () => void) {
+  if (referenceImages.length === 0) return []
+
+  setStage()
+  const urls = await Promise.all(
+    referenceImages.map(async (image) =>
+      uploadApimartImage({
+        buffer: Buffer.from(await image.arrayBuffer()),
+        filename: image.name,
+        mimeType: image.type,
+      })
+    )
+  )
+
+  const validUrls = urls.filter(Boolean)
+  if (validUrls.length !== referenceImages.length) {
+    throw new Error(`参考图上传到 APIMART 失败：${validUrls.length}/${referenceImages.length} 张返回了有效 URL。`)
+  }
+
+  return validUrls
+}
+
+function buildAllSettledFailureMessage<T>(results: PromiseSettledResult<T>[], fallback: string) {
+  const errors = summarizeSettledErrors(results)
+  if (errors.length === 0) return fallback
+  return `${fallback} ${errors.join("；")}`
+}
+
+function summarizeSettledErrors<T>(results: PromiseSettledResult<T>[]) {
+  return Array.from(
+    new Set(
+      results
+        .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+        .map((result) => describeServerError(result.reason, "上游生成失败。"))
+        .filter(Boolean)
+    )
+  ).slice(0, 3)
+}
+
+function buildFailureMessage({
+  message,
+  stage,
+  upstreamTaskId,
+}: {
+  message: string
+  stage: string
+  upstreamTaskId: string
+}) {
+  const taskText = upstreamTaskId ? `上游任务：${upstreamTaskId}` : "上游任务：无"
+  return `阶段：${stage}；${taskText}；原因：${message}`
+}
+
+async function recoverSubmittedApimartJob({
+  clientRequestId,
+  failureMessage,
+  jobId,
+  upstreamTaskId,
+}: {
+  clientRequestId: string
+  failureMessage: string
+  jobId: string
+  upstreamTaskId: string
+}) {
+  logGenerateImage("recover submitted apimart job", {
+    clientRequestId,
+    failureMessage,
+    jobId,
+    upstreamTaskId,
+  })
+
+  return updateGenerationJob(jobId, {
+    last_sync_error: failureMessage,
+    next_check_at: new Date(Date.now() + 5000).toISOString(),
+    status: "processing",
+    upstream_task_id: upstreamTaskId,
+  })
 }
 
 async function refundImageGenerationCredits({

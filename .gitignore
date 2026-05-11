@@ -16,3 +16,9 @@ node_modules
 .DS_Store
 .pnpm-store/
 *.tsbuildinfo
+
+# Local Codex conversation exports may contain secrets or browser session data
+docs/storm-ai-conversation-index.md
+docs/storm-ai-conversations.md
+docs/storm-ai-conversations/
+scripts/export-codex-conversations.mjs

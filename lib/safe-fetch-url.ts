@@ -1,5 +1,11 @@
 import { isIP } from "node:net"
 import { lookup } from "node:dns/promises"
+import https from "node:https"
+import net from "node:net"
+import tls from "node:tls"
+import { Readable, type Duplex } from "node:stream"
+
+const APIMART_PROXY_URL = getApimartProxyUrl()
 
 const privateIpv4Ranges = [
   { base: ipv4ToNumber("10.0.0.0"), mask: 8 },
@@ -26,10 +32,12 @@ export async function fetchSafeRemoteResource(input: string | URL, init: Request
   for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
     await assertSafeResolvedHost(url)
 
-    const response = await fetch(url, {
-      ...init,
-      redirect: "manual",
-    })
+    const response = APIMART_PROXY_URL
+      ? await fetchWithHttpsProxy(url, init)
+      : await fetch(url, {
+          ...init,
+          redirect: "manual",
+        })
 
     if (!isRedirectStatus(response.status)) {
       return response
@@ -137,4 +145,131 @@ function isBlockedIpv6(ip: string) {
 
 function ipv4ToNumber(ip: string) {
   return ip.split(".").reduce((value, part) => (value << 8) + Number.parseInt(part, 10), 0) >>> 0
+}
+
+function fetchWithHttpsProxy(url: URL, init: RequestInit = {}) {
+  const method = init.method ?? "GET"
+
+  if (init.body) {
+    throw new Error("代理下载暂不支持带请求体的远程请求。")
+  }
+
+  return new Promise<Response>((resolve, reject) => {
+    const request = https.request(
+      {
+        method,
+        hostname: url.hostname,
+        port: Number(url.port || 443),
+        path: `${url.pathname}${url.search}`,
+        headers: normalizeRequestHeaders(init.headers),
+        agent: new ConnectProxyAgent(APIMART_PROXY_URL),
+      },
+      (response) => {
+        const headers = new Headers()
+
+        Object.entries(response.headers).forEach(([key, value]) => {
+          if (Array.isArray(value)) {
+            value.forEach((item) => headers.append(key, item))
+          } else if (value !== undefined) {
+            headers.set(key, String(value))
+          }
+        })
+
+        resolve(
+          new Response(method.toUpperCase() === "HEAD" ? null : (Readable.toWeb(response) as ReadableStream<Uint8Array>), {
+            headers,
+            status: response.statusCode ?? 200,
+            statusText: response.statusMessage,
+          })
+        )
+      }
+    )
+
+    const abort = () => {
+      request.destroy(new Error("远程请求已取消。"))
+    }
+
+    if (init.signal?.aborted) {
+      abort()
+      return
+    }
+
+    init.signal?.addEventListener("abort", abort, { once: true })
+    request.on("error", reject)
+    request.setTimeout(30000, () => {
+      request.destroy(new Error("远程请求超时。"))
+    })
+    request.end()
+  })
+}
+
+function normalizeRequestHeaders(headers: HeadersInit | undefined) {
+  const normalized: Record<string, string> = {}
+
+  new Headers(headers).forEach((value, key) => {
+    normalized[key] = value
+  })
+
+  return normalized
+}
+
+function getApimartProxyUrl() {
+  const proxyUrl = process.env.APIMART_PROXY_URL?.trim()
+  if (!proxyUrl) return ""
+
+  const isLocalProxy =
+    proxyUrl.includes("127.0.0.1") ||
+    proxyUrl.includes("localhost") ||
+    proxyUrl.includes("[::1]")
+
+  if (isLocalProxy && (process.env.VERCEL || process.env.NODE_ENV === "production")) {
+    return ""
+  }
+
+  return proxyUrl
+}
+
+class ConnectProxyAgent extends https.Agent {
+  private proxyUrl: URL
+
+  constructor(proxyUrl: string) {
+    super()
+    this.proxyUrl = new URL(proxyUrl)
+  }
+
+  createConnection(
+    options: https.RequestOptions,
+    callback?: (error: Error | null, socket: Duplex) => void
+  ) {
+    const targetHost = String(options.host ?? options.hostname)
+    const targetPort = Number(options.port ?? 443)
+    const proxySocket = net.connect(Number(this.proxyUrl.port || 80), this.proxyUrl.hostname)
+
+    proxySocket.once("connect", () => {
+      proxySocket.write(
+        `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\nHost: ${targetHost}:${targetPort}\r\n\r\n`
+      )
+    })
+
+    proxySocket.once("error", (error) => callback?.(error, proxySocket))
+    proxySocket.once("data", (chunk) => {
+      const response = chunk.toString("utf8")
+
+      if (!response.includes("200")) {
+        callback?.(new Error(`Proxy CONNECT failed: ${response.split("\r\n")[0]}`), proxySocket)
+        proxySocket.destroy()
+        return
+      }
+
+      const tlsSocket = tls.connect({
+        socket: proxySocket,
+        servername: targetHost,
+      })
+
+      tlsSocket.once("secureConnect", () => callback?.(null, tlsSocket))
+      tlsSocket.once("error", (error) => callback?.(error, tlsSocket))
+    })
+
+    return undefined
+  }
 }

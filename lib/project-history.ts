@@ -188,6 +188,8 @@ export function mergeProjectHistories(serverProjects: ProjectItem[], localProjec
           imageUrls: mergeImageUrls(normalized, existing),
           previewLabel: existing.previewLabel ?? normalized.previewLabel,
           previewUrl: normalized.previewUrl || existing.previewUrl,
+          status: normalized.status,
+          taskError: normalized.taskError,
           title: existing.title || normalized.title,
           upstreamTaskId: normalized.upstreamTaskId || existing.upstreamTaskId,
         })

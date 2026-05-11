@@ -589,6 +589,10 @@ export function isLegacyUpstreamTaskId(taskId: string | undefined) {
   return Boolean(taskId?.startsWith("task_"))
 }
 
+function isOptimisticTaskId(taskId: string | undefined) {
+  return Boolean(taskId?.startsWith("pending-"))
+}
+
 function getTaskStatusError(task: TaskStatusResponse) {
   return task.taskError || task.error || "任务状态查询失败。"
 }
@@ -669,7 +673,7 @@ export function ChatArea({
   const meta = sectionMeta[activeSection]
 
   useEffect(() => {
-    const pendingProjects = projects.filter((project) => project.status === "生成中" && project.taskId)
+    const pendingProjects = projects.filter((project) => project.status === "生成中" && project.taskId && !isOptimisticTaskId(project.taskId))
     const projectsByTaskId = new Map<string, ProjectItem[]>()
     let active = true
     const timers: number[] = []
@@ -680,7 +684,6 @@ export function ChatArea({
     })
 
     projectsByTaskId.forEach((taskProjects, taskId) => {
-      const project = taskProjects[0]
       let attempts = 0
       const stopTaskProjects = (taskError: string) => {
         taskProjects.forEach((item) => {
@@ -726,9 +729,9 @@ export function ChatArea({
             }
 
             const resolved =
-              project.type === "视频"
-                ? resolveVideoTaskProject(task, project.previewUrl)
-                : resolveImageTaskProject(task, project.previewUrl)
+              taskProjects[0].type === "视频"
+                ? resolveVideoTaskProject(task, taskProjects[0].previewUrl)
+                : resolveImageTaskProject(task, taskProjects[0].previewUrl)
 
             if (resolved.status === "生成中") {
               if (attempts < 20) {
@@ -738,9 +741,9 @@ export function ChatArea({
             }
 
             onProjectUpdate({
-              ...project,
+              ...taskProjects[0],
               status: resolved.status,
-              imageUrls: "imageUrls" in resolved ? resolved.imageUrls : project.imageUrls,
+              imageUrls: "imageUrls" in resolved ? resolved.imageUrls : taskProjects[0].imageUrls,
               previewUrl: resolved.previewUrl,
               stage: resolved.stage,
               taskError: resolved.taskError,
@@ -1152,7 +1155,7 @@ function ImageWorkspace({
             ? "已完成"
             : "生成中"
       const generatedResult: ImageResult = {
-        id: optimisticId,
+        id: typeof data.taskId === "string" && data.taskId ? data.taskId : optimisticId,
         clientRequestId: typeof data.clientRequestId === "string" ? data.clientRequestId : clientRequestId,
         prompt: trimmedPrompt,
         model,
@@ -1577,7 +1580,7 @@ function VideoWorkspace({
       }
 
       const generatedResult: VideoResult = {
-        id: optimisticId,
+        id: typeof data.taskId === "string" && data.taskId ? data.taskId : optimisticId,
         clientRequestId: typeof data.clientRequestId === "string" ? data.clientRequestId : clientRequestId,
         prompt: trimmedPrompt,
         model,

@@ -151,7 +151,7 @@ export async function saveSupabaseAccount(account: LocalAccountData) {
   if (!supabase) return
 
   const { error } = await supabase.rpc("save_user_projects", {
-    p_projects: account.projects.filter((project) => isDeletedProjectItem(project) || !project.taskId || project.id.startsWith("pending-")),
+    p_projects: account.projects.filter((project) => isDeletedProjectItem(project) || !project.taskId),
   })
 
   if (error) throw error

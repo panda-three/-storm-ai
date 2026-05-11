@@ -1,5 +1,10 @@
-import { syncApimartGenerationJob } from "@/lib/apimart-task-sync"
-import { cleanupExpiredGenerationJobs, loadDueApimartGenerationJobs, recoverStaleGenerationJobs } from "@/lib/generation-jobs"
+import { mirrorApimartImageResults, syncApimartGenerationJob } from "@/lib/apimart-task-sync"
+import {
+  cleanupExpiredGenerationJobs,
+  loadApimartImageJobsForMirroring,
+  loadDueApimartGenerationJobs,
+  recoverStaleGenerationJobs,
+} from "@/lib/generation-jobs"
 
 export async function syncGenerationJobs({ limit = 20 } = {}) {
   const jobs = await loadDueApimartGenerationJobs({ limit })
@@ -22,6 +27,26 @@ export async function syncGenerationJobs({ limit = 20 } = {}) {
       synced: 0,
     }
   )
+  const mirrorJobs = await loadApimartImageJobsForMirroring({ limit })
+  const mirrorResults = await Promise.allSettled(mirrorJobs.map((job) => mirrorApimartImageResults(job)))
+  const mirrors = mirrorResults.reduce(
+    (current, result) => {
+      if (result.status === "rejected") {
+        current.errors += 1
+        return current
+      }
+
+      current[result.value.status] += 1
+      return current
+    },
+    {
+      checked: mirrorJobs.length,
+      errors: 0,
+      retryable_error: 0,
+      skipped: 0,
+      synced: 0,
+    }
+  )
   const stale = await recoverStaleGenerationJobs({ limit })
   const cleanup = await cleanupExpiredGenerationJobs({ limit })
 
@@ -29,6 +54,7 @@ export async function syncGenerationJobs({ limit = 20 } = {}) {
     apimart,
     cleanup,
     ok: true,
+    mirrors,
     stale,
   }
 }

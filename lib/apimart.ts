@@ -548,7 +548,6 @@ function normalizeGenerationResponse(response: ApimartTaskResponse, type: Genera
 function normalizeTaskStatus(taskId: string, response: ApimartTaskResponse): NormalizedTaskStatus {
   const data = response.data
   const statusText = findStringValue(data, ["status", "state", "task_status"])
-  const progress = findNumberValue(data, ["progress", "percentage"]) ?? (isCompletedStatus(statusText) ? 100 : 0)
   const imageUrls = extractMediaUrls(data, ["image", "image_url", "image_urls", "images", "url", "urls", "output", "result"], [
     "png",
     "jpg",
@@ -560,21 +559,24 @@ function normalizeTaskStatus(taskId: string, response: ApimartTaskResponse): Nor
     "mov",
     "webm",
   ])
+  const hasResultUrls = imageUrls.length > 0 || videoUrls.length > 0
+  const status = hasResultUrls && !isFailedStatus(statusText) ? "completed" : normalizeStatus(statusText)
+  const progress = findNumberValue(data, ["progress", "percentage"]) ?? (status === "completed" ? 100 : 0)
 
   return {
     ok: true,
     mode: "apimart",
     taskId,
-    status: normalizeStatus(statusText),
+    status,
     progress,
     imageUrls,
     videoUrl: videoUrls[0] ?? "",
-    taskError: findStringValue(data, ["message", "error_message", "reason"]),
+    taskError: findStringValue(data, ["message", "error_message", "reason", "error"]),
     raw: data,
   }
 }
 
-function normalizeStatus(status: string) {
+function normalizeStatus(status: string): NormalizedTaskStatus["status"] {
   const value = status.toLowerCase()
 
   if (["success", "succeeded", "completed", "complete", "done", "finish", "finished"].includes(value)) {
@@ -592,8 +594,8 @@ function normalizeStatus(status: string) {
   return "processing"
 }
 
-function isCompletedStatus(status: string) {
-  return normalizeStatus(status) === "completed"
+function isFailedStatus(status: string) {
+  return normalizeStatus(status) === "failed"
 }
 
 function findStringValue(value: unknown, keys: string[]): string {

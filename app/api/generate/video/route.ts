@@ -25,7 +25,9 @@ const supportedReferenceImageTypes = ["image/jpeg", "image/png", "image/webp"]
 
 export async function POST(request: Request) {
   let billingReason = ""
+  let clientRequestId = ""
   let jobId = ""
+  let upstreamTaskId = ""
   let userId = ""
 
   try {
@@ -44,7 +46,7 @@ export async function POST(request: Request) {
     const duration = String(getValue("duration") ?? "5 秒")
     const quality = String(getValue("quality") ?? "720P")
     const aspectRatio = String(getValue("aspectRatio") ?? "16:9")
-    const clientRequestId = String(getValue("clientRequestId") ?? "").trim()
+    clientRequestId = String(getValue("clientRequestId") ?? "").trim()
     const rawReferenceImages = body instanceof FormData ? getReferenceImageLogs(body) : []
     const modelSettings = videoModelSettings[model]
 
@@ -112,6 +114,7 @@ export async function POST(request: Request) {
       logGenerateVideo("generation input", generationInput)
 
       const result = await createMengfactoryVideo(generationInput)
+      upstreamTaskId = result.taskId
       const nextJob = await updateActiveGenerationJob(job.id, {
         next_check_at: new Date(Date.now() + 5000).toISOString(),
         status: result.status === "submitted" ? "submitted" : "processing",
@@ -150,6 +153,7 @@ export async function POST(request: Request) {
     logGenerateVideo("generation input", generationInput)
 
     const result = await createVideoGeneration(generationInput)
+    upstreamTaskId = result.taskId
     const nextJob = await updateActiveGenerationJob(job.id, {
       next_check_at: new Date(Date.now() + 5000).toISOString(),
       status: result.status === "submitted" ? "submitted" : "processing",
@@ -178,6 +182,27 @@ export async function POST(request: Request) {
     })
 
     if (jobId) {
+      if (upstreamTaskId) {
+        const recoveredJob = await recoverSubmittedVideoJob({
+          failureMessage: message,
+          jobId,
+          upstreamTaskId,
+        }).catch(() => null)
+
+        if (recoveredJob) {
+          return NextResponse.json({
+            ok: true,
+            mode: recoveredJob.provider === "mengfactory" ? "mengfactory" : "apimart",
+            status: recoveredJob.status,
+            taskId: recoveredJob.id,
+            upstreamTaskId,
+            type: "video",
+            clientRequestId,
+            taskError: message,
+          })
+        }
+      }
+
       await failGenerationJobWithRefund({
         jobId,
         reason: `${billingReason || "AI 视频"}提交失败退款：${message}`,
@@ -192,6 +217,23 @@ export async function POST(request: Request) {
       { status: message.includes("登录") ? 401 : 500 }
     )
   }
+}
+
+async function recoverSubmittedVideoJob({
+  failureMessage,
+  jobId,
+  upstreamTaskId,
+}: {
+  failureMessage: string
+  jobId: string
+  upstreamTaskId: string
+}) {
+  return updateActiveGenerationJob(jobId, {
+    last_sync_error: failureMessage,
+    next_check_at: new Date(Date.now() + 5000).toISOString(),
+    status: "processing",
+    upstream_task_id: upstreamTaskId,
+  })
 }
 
 async function loadVideoPricing({

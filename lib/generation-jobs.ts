@@ -373,6 +373,52 @@ export async function loadDueApimartGenerationJobs({ limit = 20 } = {}) {
   return (data ?? []) as GenerationJob[]
 }
 
+export async function loadInteractiveApimartGenerationJobsForUser({
+  limit = 20,
+  userId,
+}: {
+  limit?: number
+  userId: string
+}) {
+  const now = new Date().toISOString()
+  const { data, error } = await getSupabaseServerClient()
+    .from("generation_jobs")
+    .select(generationJobSelect)
+    .eq("provider", "apimart")
+    .eq("user_id", userId)
+    .in("status", ["submitted", "processing"])
+    .not("upstream_task_id", "is", null)
+    .or(`sync_locked_until.is.null,sync_locked_until.lt.${now}`)
+    .order("created_at", { ascending: true })
+    .limit(limit)
+
+  if (error) {
+    throw new Error(describeServerError(error, "读取用户待同步任务失败。"), { cause: error })
+  }
+  return (data ?? []) as GenerationJob[]
+}
+
+export async function loadApimartImageJobsForMirroring({ limit = 20 } = {}) {
+  const { data, error } = await getSupabaseServerClient()
+    .from("generation_jobs")
+    .select(generationJobSelect)
+    .eq("provider", "apimart")
+    .eq("type", "image")
+    .in("status", ["completed", "partial_completed"])
+    .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
+    .order("last_checked_at", { ascending: true, nullsFirst: true })
+    .order("created_at", { ascending: true })
+    .limit(limit)
+
+  if (error) {
+    throw new Error(describeServerError(error, "读取待转存图片任务失败。"), { cause: error })
+  }
+
+  return ((data ?? []) as GenerationJob[]).filter((job) =>
+    job.result_urls.some((url) => !getGeneratedStorageObjectPath(url))
+  )
+}
+
 export async function loadStaleGenerationJobs({
   limit = 20,
   userId,
@@ -433,7 +479,12 @@ export async function recoverStaleGenerationJob(job: GenerationJob) {
     const status: GenerationJobStatus = taskError && result.status === "completed" ? "failed" : result.status
 
     if (!isTerminalGenerationJobStatus(status)) {
-      return failGenerationJobWithRefund({ jobId: job.id })
+      return updateGenerationJob(job.id, {
+        last_checked_at: new Date().toISOString(),
+        last_sync_error: generationTimeoutMessage,
+        next_check_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+        sync_locked_until: null,
+      })
     }
 
     if (status === "failed") {
@@ -459,12 +510,19 @@ export async function recoverStaleGenerationJob(job: GenerationJob) {
 
     return nextJob
   } catch (error) {
+    const message = error instanceof Error ? error.message : "任务状态查询失败。"
     console.warn("[Generation Recovery] final status query failed", {
-      error: error instanceof Error ? error.message : String(error),
+      error: message,
       jobId: job.id,
       upstreamTaskId: job.upstream_task_id,
     })
-    return failGenerationJobWithRefund({ jobId: job.id })
+    return updateGenerationJob(job.id, {
+      check_attempts: job.check_attempts + 1,
+      last_checked_at: new Date().toISOString(),
+      last_sync_error: message,
+      next_check_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      sync_locked_until: null,
+    })
   }
 }
 
