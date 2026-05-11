@@ -1,7 +1,7 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
-import type { SupabaseClient, User } from "@supabase/supabase-js"
+import { useCallback, useEffect, useRef, useState } from "react"
+import type { Session, SupabaseClient, User } from "@supabase/supabase-js"
 import {
   createDefaultAccount,
   loadLocalAccount,
@@ -97,6 +97,7 @@ export function useAccountSession() {
   const [authReady, setAuthReady] = useState(false)
   const [user, setUser] = useState<User | null>(null)
   const [syncError, setSyncError] = useState("")
+  const authSequenceRef = useRef(0)
   const userId = user?.id ?? ""
 
   useEffect(() => {
@@ -108,13 +109,65 @@ export function useAccountSession() {
       return
     }
 
+    const beginAuthUpdate = () => {
+      authSequenceRef.current += 1
+      return authSequenceRef.current
+    }
+
+    const isCurrentAuthUpdate = (sequence: number) => active && authSequenceRef.current === sequence
+
+    const setSessionUser = (session: Session | null) => {
+      setUser((current) => {
+        const nextUser = session?.user ?? null
+
+        if (current?.id === nextUser?.id) {
+          return current
+        }
+
+        return nextUser
+      })
+      setAuthReady(true)
+    }
+
+    const handleSession = async (session: Session | null, sequence: number, action: "claim" | "assert") => {
+      if (!session) {
+        if (!isCurrentAuthUpdate(sequence)) return
+        setUser(null)
+        setAuthReady(true)
+        return
+      }
+
+      try {
+        if (action === "claim") {
+          await claimCurrentAuthSession()
+        } else {
+          await assertCurrentAuthSession()
+        }
+      } catch (error) {
+        if (!isCurrentAuthUpdate(sequence)) return
+
+        await clearLocalSupabaseSession(supabase)
+        if (!isCurrentAuthUpdate(sequence)) return
+
+        setSyncError(getErrorMessage(error, action === "claim" ? "登录设备校验失败，请重新登录。" : "登录设备已失效，请重新登录。"))
+        setUser(null)
+        setAuthReady(true)
+        return
+      }
+
+      if (!isCurrentAuthUpdate(sequence)) return
+      setSyncError("")
+      setSessionUser(session)
+    }
+
+    const initialSequence = beginAuthUpdate()
     supabase.auth.getSession().then(async ({ data, error }) => {
-      if (!active) return
+      if (!isCurrentAuthUpdate(initialSequence)) return
 
       if (error) {
         if (isInvalidRefreshTokenError(error)) {
           await clearLocalSupabaseSession(supabase)
-          if (!active) return
+          if (!isCurrentAuthUpdate(initialSequence)) return
 
           setUser(null)
           setAuthReady(true)
@@ -127,28 +180,13 @@ export function useAccountSession() {
         return
       }
 
-      if (data.session) {
-        try {
-          await claimCurrentAuthSession()
-        } catch (error) {
-          await clearLocalSupabaseSession(supabase)
-          if (!active) return
-
-          setSyncError(getErrorMessage(error, "登录设备校验失败，请重新登录。"))
-          setUser(null)
-          setAuthReady(true)
-          return
-        }
-      }
-
-      setUser(data.session?.user ?? null)
-      setAuthReady(true)
+      await handleSession(data.session ?? null, initialSequence, "claim")
     }).catch(async (error) => {
-      if (!active) return
+      if (!isCurrentAuthUpdate(initialSequence)) return
 
       if (isInvalidRefreshTokenError(error)) {
         await clearLocalSupabaseSession(supabase)
-        if (!active) return
+        if (!isCurrentAuthUpdate(initialSequence)) return
 
         setUser(null)
         setAuthReady(true)
@@ -161,16 +199,10 @@ export function useAccountSession() {
     })
 
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      const sequence = beginAuthUpdate()
+
       if (event === "TOKEN_REFRESHED") {
-        if (session) {
-          assertCurrentAuthSession().catch(async (error) => {
-            await clearLocalSupabaseSession(supabase)
-            setSyncError(getErrorMessage(error, "登录设备已失效，请重新登录。"))
-            setUser(null)
-            setAuthReady(true)
-          })
-        }
-        setAuthReady(true)
+        void handleSession(session, sequence, "assert")
         return
       }
 
@@ -181,24 +213,11 @@ export function useAccountSession() {
       }
 
       if (event === "SIGNED_IN" && session) {
-        claimCurrentAuthSession().catch(async (error) => {
-          await clearLocalSupabaseSession(supabase)
-          setSyncError(getErrorMessage(error, "登录设备校验失败，请重新登录。"))
-          setUser(null)
-          setAuthReady(true)
-        })
+        void handleSession(session, sequence, "claim")
+        return
       }
 
-      setUser((current) => {
-        const nextUser = session?.user ?? null
-
-        if (current?.id === nextUser?.id) {
-          return current
-        }
-
-        return nextUser
-      })
-      setAuthReady(true)
+      setSessionUser(session)
     })
 
     return () => {
