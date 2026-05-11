@@ -1,4 +1,4 @@
-import { formatLedgerDateTime } from "@/lib/date-time"
+import { formatLedgerDateTime, getLedgerTimeValue } from "@/lib/date-time"
 import type { GenerationJob } from "@/lib/generation-jobs"
 
 export type ProjectType = "生图" | "视频"
@@ -10,6 +10,7 @@ export interface ProjectItem {
   type: ProjectType
   status: ProjectStatus
   time: string
+  createdAt?: string
   clientRequestId?: string
   deletedAt?: string
   duration?: string
@@ -84,6 +85,7 @@ export function createDeletedProjectItem(project: ProjectItem): ProjectItem {
     type: project.type,
     status: project.status,
     time: project.time,
+    createdAt: project.createdAt,
     deletedAt: new Date().toISOString(),
     clientRequestId: project.clientRequestId,
     taskId: project.taskId,
@@ -155,6 +157,7 @@ export function generationJobToProjectItem(job: GenerationJob): ProjectItem {
     type: isImage ? "生图" : "视频",
     status: normalizeGenerationJobStatus(job.status),
     time: formatLedgerDateTime(job.created_at),
+    createdAt: job.created_at,
     clientRequestId: job.client_request_id ?? undefined,
     model: job.model,
     palette: isImage ? "from-indigo-500 via-sky-400 to-emerald-300" : "from-slate-950 via-indigo-700 to-cyan-400",
@@ -181,6 +184,26 @@ function buildGenerationJobPreviewLabel(job: GenerationJob) {
   ].filter(Boolean)
 
   return parts.length > 0 ? parts.join(" · ") : undefined
+}
+
+function getProjectTimeValue(project: ProjectItem) {
+  if (project.createdAt) {
+    const createdAtValue = getLedgerTimeValue(project.createdAt)
+    if (createdAtValue > 0) return createdAtValue
+  }
+
+  if (project.time === "刚刚") return Date.now()
+
+  const timeValue = getLedgerTimeValue(project.time)
+  if (timeValue > 0) return timeValue
+
+  const currentYear = new Date().getFullYear()
+  const datedTimeValue = getLedgerTimeValue(`${currentYear}-${project.time}`)
+  return datedTimeValue > 0 ? datedTimeValue : 0
+}
+
+export function sortProjectHistory(projects: ProjectItem[]) {
+  return [...projects].sort((a, b) => getProjectTimeValue(b) - getProjectTimeValue(a))
 }
 
 export function mergeProjectHistories(serverProjects: ProjectItem[], localProjects: ProjectItem[]) {
@@ -245,7 +268,7 @@ export function mergeProjectHistories(serverProjects: ProjectItem[], localProjec
   serverProjects.forEach((project) => addProject(project, true))
   localProjects.forEach((project) => addProject(project, false))
 
-  return merged
+  return sortProjectHistory(merged)
 }
 
 export function mergeSyncedProjectHistories(serverProjects: ProjectItem[], localProjects: ProjectItem[]) {

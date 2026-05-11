@@ -31,7 +31,7 @@ type TaskStatusValue = "submitted" | "processing" | "completed" | "failed" | "pa
 
 interface TaskStatusResponse {
   ok: boolean
-  mode?: "apimart" | "mengfactory" | "mock"
+  mode?: "apimart" | "mengfactory" | "mock" | "yunwu"
   taskId?: string
   status?: TaskStatusValue
   progress?: number

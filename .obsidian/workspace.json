@@ -4,11 +4,11 @@
     "type": "split",
     "children": [
       {
-        "id": "82c521d98a3936d3",
+        "id": "94c30ddd5e7890b5",
         "type": "tabs",
         "children": [
           {
-            "id": "ed9d89daec125893",
+            "id": "64437af2b03878f6",
             "type": "leaf",
             "state": {
               "type": "vscode-editor",
@@ -179,8 +179,9 @@
       "bases:新建数据库": false
     }
   },
-  "active": "ed9d89daec125893",
+  "active": "8ec0b6e57e61c42e",
   "lastOpenFiles": [
+    "supabase-schema.sql",
     "app/api/generate/image/route.ts",
     "app/api/admin/users/[userId]/active-session/route.ts",
     "app/api/admin/users/[userId]/active-session",
@@ -191,7 +192,6 @@
     "app/api/admin/users/[userId]/temporary-password/route.ts",
     "app/api/admin/users/[userId]/temporary-password",
     "app/api/admin/users/[userId]",
-    "app/api/admin/users/route.ts",
     "docs/vercel-error-troubleshooting.md",
     "docs/storm-ai-conversation-index.md",
     "docs/storm-ai-conversations.md",

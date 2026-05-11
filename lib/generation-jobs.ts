@@ -2,6 +2,7 @@ import { getSupabaseServerClient } from "@/lib/server-supabase"
 import { deleteGeneratedImageByPublicUrl, describeServerError, getGeneratedStorageObjectPath } from "@/lib/server-supabase"
 import { getTaskStatus, type GenerationKind, type NormalizedTaskStatus } from "@/lib/apimart"
 import { getMengfactoryVideoTaskStatus } from "@/lib/mengfactory"
+import { getYunwuVideoTaskStatus } from "@/lib/yunwu"
 
 export type GenerationJobStatus = "submitted" | "processing" | "completed" | "failed" | "partial_completed"
 
@@ -385,7 +386,7 @@ export async function loadDueApimartGenerationJobs({ limit = 20 } = {}) {
   const { data, error } = await getSupabaseServerClient()
     .from("generation_jobs")
     .select(generationJobSelect)
-    .eq("provider", "apimart")
+    .in("provider", ["apimart", "yunwu"])
     .in("status", ["submitted", "processing"])
     .not("upstream_task_id", "is", null)
     .lte("next_check_at", now)
@@ -411,7 +412,7 @@ export async function loadInteractiveApimartGenerationJobsForUser({
   const { data, error } = await getSupabaseServerClient()
     .from("generation_jobs")
     .select(generationJobSelect)
-    .eq("provider", "apimart")
+    .in("provider", ["apimart", "yunwu"])
     .eq("user_id", userId)
     .in("status", ["submitted", "processing"])
     .not("upstream_task_id", "is", null)
@@ -429,7 +430,7 @@ export async function loadApimartImageJobsForMirroring({ limit = 20 } = {}) {
   const { data, error } = await getSupabaseServerClient()
     .from("generation_jobs")
     .select(generationJobSelect)
-    .eq("provider", "apimart")
+    .in("provider", ["apimart", "yunwu"])
     .eq("type", "image")
     .in("status", ["completed", "partial_completed"])
     .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
@@ -498,6 +499,8 @@ export async function recoverStaleGenerationJob(job: GenerationJob) {
     const result =
       job.provider === "mengfactory" && job.type === "video"
         ? await getMengfactoryVideoTaskStatus(job.upstream_task_id)
+        : job.provider === "yunwu" && job.type === "video"
+          ? await getYunwuVideoTaskStatus(job.upstream_task_id)
         : await getTaskStatus(job.upstream_task_id)
     const resultUrls = job.type === "image" ? result.imageUrls : result.videoUrl ? [result.videoUrl] : []
     const taskError =
@@ -579,7 +582,14 @@ export function normalizeJobTaskStatus(job: GenerationJob): NormalizedTaskStatus
 
   return {
     ok: true,
-    mode: job.provider === "mengfactory" ? "mengfactory" : job.provider === "mock" ? "mock" : "apimart",
+    mode:
+      job.provider === "mengfactory"
+        ? "mengfactory"
+        : job.provider === "yunwu"
+          ? "yunwu"
+          : job.provider === "mock"
+            ? "mock"
+            : "apimart",
     taskId: job.id,
     status: job.status,
     progress: isTerminalGenerationJobStatus(job.status) ? 100 : 0,

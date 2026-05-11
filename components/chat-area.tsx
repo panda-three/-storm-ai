@@ -387,7 +387,8 @@ function getNowLabel() {
 }
 
 function getOptionLabel(option: string) {
-  if (option === "Gemini 3.1 Flash Image Preview") return "Gemini3香蕉pro"
+  if (option === "Gemini 3.1 Flash Image Preview") return "Gemini3香蕉pro（MengFactory）"
+  if (option === "gemini-3.1-flash-image-preview") return "gemini-3.1-flash-image-preview（云雾）"
   if (option === "1") return "一张"
   if (option === "2") return "两张"
   if (option === "3") return "三张"
@@ -662,6 +663,7 @@ interface ImageResult {
   quality: string
   ratio: string
   createdAt: string
+  createdAtIso: string
   imageCount: number
   imageUrl: string
   imageUrls: string[]
@@ -681,6 +683,7 @@ interface VideoResult {
   duration: string
   quality: string
   createdAt: string
+  createdAtIso: string
   sceneTitle: string
   palette: string
   status: ProjectStatus
@@ -929,6 +932,7 @@ export function ChatArea({
       type: "生图",
       status: result.status,
       time: result.createdAt,
+      createdAt: result.createdAtIso,
       model: result.model,
       palette: result.palette,
       prompt: result.prompt,
@@ -952,6 +956,7 @@ export function ChatArea({
       type: "视频",
       status: result.status,
       time: result.createdAt,
+      createdAt: result.createdAtIso,
       model: result.model,
       palette: result.palette,
       prompt: result.prompt,
@@ -1269,6 +1274,7 @@ function ImageWorkspace({
     setIsGenerating(true)
     const clientRequestId = crypto.randomUUID()
     const optimisticId = `pending-image-${Date.now()}`
+    const createdAtIso = new Date().toISOString()
     const resolvedRatio =
       ratio === imageDefaultRatioOption ? resolveReferenceImageRatio(referenceImages[0], ratioOptions) : ratio
 
@@ -1280,6 +1286,7 @@ function ImageWorkspace({
       quality,
       ratio: resolvedRatio,
       createdAt: getNowLabel(),
+      createdAtIso,
       imageCount: parsedImageCount,
       imageUrl: "",
       imageUrls: [],
@@ -1335,6 +1342,7 @@ function ImageWorkspace({
         quality,
         ratio: resolvedRatio,
         createdAt: "刚刚",
+        createdAtIso,
         imageCount: parsedImageCount,
         imageUrl: imageUrls[0] ?? "",
         imageUrls,
@@ -1356,6 +1364,7 @@ function ImageWorkspace({
         quality,
         ratio: resolvedRatio,
         createdAt: getNowLabel(),
+        createdAtIso,
         imageCount: parsedImageCount,
         imageUrl: "",
         imageUrls: [],
@@ -1726,6 +1735,7 @@ function VideoWorkspace({
     setIsGenerating(true)
     const clientRequestId = crypto.randomUUID()
     const optimisticId = `pending-video-${Date.now()}`
+    const createdAtIso = new Date().toISOString()
 
     onVideoGenerated({
       id: optimisticId,
@@ -1736,6 +1746,7 @@ function VideoWorkspace({
       duration,
       quality,
       createdAt: getNowLabel(),
+      createdAtIso,
       sceneTitle: trimmedPrompt.slice(0, 24) || "视频预览",
       palette: "from-slate-200 via-cyan-100 to-sky-100",
       status: "生成中",
@@ -1783,6 +1794,7 @@ function VideoWorkspace({
         duration,
         quality,
         createdAt: "刚刚",
+        createdAtIso,
         sceneTitle: trimmedPrompt.slice(0, 24) || "视频预览",
         palette: "from-slate-950 via-indigo-700 to-cyan-400",
         status: "生成中",
@@ -1804,6 +1816,7 @@ function VideoWorkspace({
         duration,
         quality,
         createdAt: getNowLabel(),
+        createdAtIso,
         sceneTitle: trimmedPrompt.slice(0, 24) || "视频预览",
         palette: "from-rose-100 via-slate-100 to-amber-100",
         status: "失败",

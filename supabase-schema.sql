@@ -506,7 +506,7 @@ create index if not exists generation_jobs_expires_at_idx on public.generation_j
 where status in ('completed', 'failed', 'partial_completed');
 create index if not exists generation_jobs_sync_due_idx
 on public.generation_jobs (next_check_at, created_at)
-where provider = 'apimart'
+where provider in ('apimart', 'yunwu')
   and status in ('submitted', 'processing')
   and upstream_task_id is not null;
 

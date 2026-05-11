@@ -13,6 +13,7 @@ import {
   mergeProjectHistories,
   mergeSyncedProjectHistories,
   normalizeProjectItem,
+  sortProjectHistory,
   type ProjectItem,
 } from "@/lib/project-history"
 import {
@@ -49,7 +50,7 @@ function createAccountFromRemote(userId: string, remoteAccount: Awaited<ReturnTy
     membershipFreeImageQualities: remoteAccount?.membership_free_image_qualities ?? [],
     membershipTier: remoteAccount?.membership_tier ?? null,
     mustChangePassword: remoteAccount?.must_change_password ?? false,
-    projects: filterAccountCachedProjects(remoteAccount?.projects ?? []),
+    projects: sortProjectHistory(filterAccountCachedProjects(remoteAccount?.projects ?? [])),
     redeemedCodes: remoteAccount?.redeemed_codes ?? [],
     role: remoteAccount?.role ?? "user",
     temporaryPasswordSetAt: remoteAccount?.temporary_password_set_at ?? null,
@@ -265,28 +266,22 @@ export function useAccountSession() {
         const remoteAccount = await loadSupabaseAccount(userId)
         if (!active) return
 
-        const cachedAccount = createAccountFromRemote(userId, remoteAccount)
-        setAccount((current) => ({
-          ...cachedAccount,
-          projects: mergeProjectHistories(cachedAccount.projects, current?.projects ?? []),
-        }))
-        setAccountStatus("ready")
+        const serverProjects = await loadServerHistoryProjects().catch((error) => {
+          if (!active) return []
+          setSyncError(getErrorMessage(error, "读取生成历史失败。"))
+          return []
+        })
+        if (!active) return
 
-        loadServerHistoryProjects()
-          .then((serverProjects) => {
-            if (!active) return
-            setAccount((current) => {
-              if (!current || current.userId !== userId) return current
-              return {
-                ...current,
-                projects: mergeSyncedProjectHistories(serverProjects, current.projects),
-              }
-            })
-          })
-          .catch((error) => {
-            if (!active) return
-            setSyncError(getErrorMessage(error, "读取生成历史失败。"))
-          })
+        const cachedAccount = createAccountFromRemote(userId, remoteAccount)
+        setAccount((current) => {
+          const cachedProjects = mergeProjectHistories(cachedAccount.projects, current?.projects ?? [])
+          return {
+            ...cachedAccount,
+            projects: mergeSyncedProjectHistories(serverProjects, cachedProjects),
+          }
+        })
+        setAccountStatus("ready")
       } catch (error) {
         if (!active) return
         setAccount(null)
@@ -326,25 +321,18 @@ export function useAccountSession() {
       setSyncError("")
       const remoteAccount = await loadSupabaseAccount(userId)
       const refreshedAccount = createAccountFromRemote(userId, remoteAccount)
-      setAccount((current) => ({
-        ...refreshedAccount,
-        projects: mergeProjectHistories(refreshedAccount.projects, current?.projects ?? []),
-      }))
+      const serverProjects = await loadServerHistoryProjects().catch((error) => {
+        setSyncError(getErrorMessage(error, "读取生成历史失败。"))
+        return []
+      })
+      setAccount((current) => {
+        const cachedProjects = mergeProjectHistories(refreshedAccount.projects, current?.projects ?? [])
+        return {
+          ...refreshedAccount,
+          projects: mergeSyncedProjectHistories(serverProjects, cachedProjects),
+        }
+      })
       setAccountStatus("ready")
-
-      loadServerHistoryProjects()
-        .then((serverProjects) => {
-          setAccount((current) => {
-            if (!current || current.userId !== userId) return current
-            return {
-              ...current,
-              projects: mergeSyncedProjectHistories(serverProjects, current.projects),
-            }
-          })
-        })
-        .catch((error) => {
-          setSyncError(getErrorMessage(error, "读取生成历史失败。"))
-        })
     } catch (error) {
       setAccount((current) => {
         if (!current) setAccountStatus("error")

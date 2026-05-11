@@ -6,6 +6,7 @@ import {
 } from "@/lib/generation-jobs"
 import { createVideoGeneration, normalizeVideoDuration, uploadApimartImage } from "@/lib/apimart"
 import { createMengfactoryVideo } from "@/lib/mengfactory"
+import { createYunwuVideo } from "@/lib/yunwu"
 import { calculatePricingCredits, type ModelPricing } from "@/lib/supabase"
 import {
   getSupabaseServerClient,
@@ -15,6 +16,7 @@ import {
 } from "@/lib/server-supabase"
 import {
   isMengfactoryVeoVideoModel,
+  isYunwuVideoModel,
   legacyApimartVeoVideoModelName,
   videoModelSettings,
 } from "@/lib/model-options"
@@ -124,7 +126,7 @@ export async function POST(request: Request) {
       clientRequestId,
       model,
       prompt,
-      provider: isMengfactoryVeoVideoModel(model) ? "mengfactory" : "apimart",
+      provider: isMengfactoryVeoVideoModel(model) ? "mengfactory" : isYunwuVideoModel(model) ? "yunwu" : "apimart",
       quality,
       aspectRatio,
       durationSeconds: normalizeVideoDuration(duration),
@@ -153,6 +155,41 @@ export async function POST(request: Request) {
       logGenerateVideo("generation input", generationInput)
 
       const result = await createMengfactoryVideo(generationInput)
+      upstreamTaskId = result.taskId
+      cleanupPreparedReferenceImages = false
+      const nextJob = await updateActiveGenerationJob(job.id, {
+        next_check_at: new Date(Date.now() + 5000).toISOString(),
+        status: result.status === "submitted" ? "submitted" : "processing",
+        storage_urls: imageUrls,
+        upstream_task_id: result.taskId,
+      })
+
+      if (!nextJob) {
+        throw new Error("生成任务已结束，不能提交上游任务。")
+      }
+
+      logGenerateVideo("output", result)
+
+      return NextResponse.json({
+        ...result,
+        clientRequestId,
+        taskId: job.id,
+        upstreamTaskId: result.taskId,
+      })
+    }
+
+    if (isYunwuVideoModel(model)) {
+      const imageUrls = getPreparedReferencePublicUrls(preparedReferenceImages)
+      const generationInput = {
+        imageUrls,
+        model,
+        prompt,
+        quality,
+        aspectRatio,
+      }
+      logGenerateVideo("yunwu generation input", generationInput)
+
+      const result = await createYunwuVideo(generationInput)
       upstreamTaskId = result.taskId
       cleanupPreparedReferenceImages = false
       const nextJob = await updateActiveGenerationJob(job.id, {
@@ -226,7 +263,12 @@ export async function POST(request: Request) {
         if (recoveredJob) {
           return NextResponse.json({
             ok: true,
-            mode: recoveredJob.provider === "mengfactory" ? "mengfactory" : "apimart",
+            mode:
+              recoveredJob.provider === "mengfactory"
+                ? "mengfactory"
+                : recoveredJob.provider === "yunwu"
+                  ? "yunwu"
+                  : "apimart",
             status: recoveredJob.status,
             taskId: recoveredJob.id,
             upstreamTaskId,

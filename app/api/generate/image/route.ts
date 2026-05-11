@@ -13,6 +13,11 @@ import {
   type MengfactoryGeneratedImage,
 } from "@/lib/mengfactory"
 import {
+  createYunwuGeminiImage,
+  createYunwuGptImages,
+  type YunwuGeneratedImage,
+} from "@/lib/yunwu"
+import {
   calculatePricingCredits,
   type ModelPricing,
 } from "@/lib/supabase"
@@ -22,11 +27,15 @@ import {
   deleteGeneratedImageByPublicUrl,
   refundGenerationCredits,
   requireAuthenticatedUser,
+  persistRemoteGeneratedImage,
   uploadGeneratedImage,
 } from "@/lib/server-supabase"
 import {
   gptImage2Supported4KRatios,
   isMengfactoryGeminiImageModel,
+  isYunwuGeminiImageModel,
+  isYunwuGptImageModel,
+  isYunwuImageModel,
   isValidImageRatioForQuality,
 } from "@/lib/model-options"
 import {
@@ -43,6 +52,7 @@ interface PreparedReferenceImage {
   name: string
   path?: string
   bucket?: string
+  publicUrl?: string
 }
 
 export async function POST(request: Request) {
@@ -137,23 +147,35 @@ export async function POST(request: Request) {
     }
 
     const isMengfactoryImage = isMengfactoryGeminiImageModel(model)
-    const provider = isMengfactoryImage ? "mengfactory" : "apimart"
+    const isYunwuImage = isYunwuImageModel(model)
+    const provider = isMengfactoryImage ? "mengfactory" : isYunwuImage ? "yunwu" : "apimart"
+    logGenerateImage("provider route", {
+      isMengfactoryImage,
+      isYunwuImage,
+      model,
+      provider,
+    })
     stage = "prepare_reference_images"
     preparedReferenceImages = await prepareReferenceImages({
       referenceFiles,
       storedReferenceImages,
       userId,
     })
-    const referenceBuffers = isMengfactoryGeminiImageModel(model)
+    const referenceBuffers = isMengfactoryImage || isYunwuGeminiImageModel(model)
       ? await prepareMengfactoryReferenceImages(preparedReferenceImages, () => {
-          stage = "prepare_mengfactory_references"
+          stage = isYunwuGeminiImageModel(model) ? "prepare_yunwu_gemini_references" : "prepare_mengfactory_references"
         })
       : []
-    const apimartReferenceImageUrls = isMengfactoryImage
+    const apimartReferenceImageUrls = isMengfactoryImage || isYunwuGeminiImageModel(model) || isYunwuGptImageModel(model)
       ? []
       : await uploadApimartReferenceImages(preparedReferenceImages, () => {
           stage = "upload_apimart_references"
         })
+    const yunwuReferenceImageUrls = isYunwuGptImageModel(model)
+      ? await prepareYunwuReferenceImageUrls(preparedReferenceImages, userId, () => {
+          stage = "prepare_yunwu_gpt_references"
+        })
+      : []
 
     stage = "create_generation_job_with_billing"
     const job = await createGenerationJobWithBilling({
@@ -258,6 +280,111 @@ export async function POST(request: Request) {
         await Promise.all(imageUrls.map((url) => deleteGeneratedImageByPublicUrl(url)))
         throw error
       }
+    }
+
+    if (isYunwuImage) {
+      stage = "submit_yunwu_generation"
+      const generatedResults: PromiseSettledResult<string>[] = isYunwuGeminiImageModel(model)
+        ? await Promise.allSettled(
+            Array.from({ length: imageCount }, async () => {
+              const generated: YunwuGeneratedImage = await createYunwuGeminiImage({
+                model,
+                prompt,
+                quality,
+                ratio,
+                referenceImages: referenceBuffers,
+              })
+              const uploaded = await uploadGeneratedImage({
+                buffer: generated.buffer,
+                contentType: generated.mimeType,
+                userId,
+              })
+              return uploaded.publicUrl
+            })
+          )
+        : await Promise.allSettled(
+            (
+              await createYunwuGptImages({
+                imageUrls: yunwuReferenceImageUrls,
+                imageCount,
+                model,
+                prompt,
+                ratio,
+              })
+            ).map((url) =>
+              persistRemoteGeneratedImage({
+                sourceUrl: url,
+                userId,
+              }).catch((error) => {
+                console.warn("[Generate Image] yunwu remote image mirror failed", {
+                  error: describeServerError(error, "生成图片转存失败。"),
+                  url,
+                })
+                return url
+              })
+            )
+          )
+      const imageUrls = generatedResults
+        .filter((result): result is PromiseFulfilledResult<string> => result.status === "fulfilled")
+        .map((result) => result.value)
+        .filter(Boolean)
+
+      if (imageUrls.length === 0) {
+        throw new Error(buildAllSettledFailureMessage(generatedResults, "图片生成失败，未返回可用结果。"))
+      }
+
+      const status: GenerationJobStatus = imageUrls.length < imageCount ? "partial_completed" : "completed"
+      const upstreamErrors = summarizeSettledErrors(generatedResults)
+      const taskError =
+        status === "partial_completed"
+          ? buildPartialImageMessage({
+              amount: billingAmount,
+              expectedResultCount: imageCount,
+              successCount: imageUrls.length,
+              upstreamErrors,
+            })
+          : upstreamErrors.length > 0
+            ? upstreamErrors.join("；")
+            : null
+      const completedAt = new Date().toISOString()
+
+      stage = "complete_yunwu_job"
+      const nextJob = await updateActiveGenerationJob(job.id, {
+        completed_at: completedAt,
+        expires_at: getGenerationJobExpiresAt(completedAt),
+        last_checked_at: completedAt,
+        result_urls: imageUrls,
+        status,
+        storage_urls: imageUrls,
+        task_error: taskError,
+      })
+
+      if (!nextJob) {
+        await Promise.all(imageUrls.map((url) => deleteGeneratedImageByPublicUrl(url)))
+        throw new Error("生成任务已结束，迟到结果已丢弃。")
+      }
+
+      if (status === "partial_completed") {
+        const partialRefundAmount = calculatePartialRefundAmount(billingAmount, imageUrls.length, imageCount)
+        await refundImageGenerationCredits({
+          amount: partialRefundAmount,
+          reason: `AI 生图部分失败退款 · ${model} · ${imageCount - imageUrls.length}/${imageCount} 张`,
+          reference: buildPartialRefundReference(billingReference, imageUrls.length, imageCount),
+          userId,
+        })
+      }
+
+      return NextResponse.json({
+        ok: true,
+        mode: "yunwu",
+        taskId: job.id,
+        status,
+        type: "image",
+        imageUrls,
+        clientRequestId,
+        progress: 100,
+        taskError: taskError ?? "",
+      })
     }
 
     const generationInput = {
@@ -615,6 +742,7 @@ async function prepareReferenceImages({
 
       const buffer = Buffer.from(await data.arrayBuffer())
       validateReferenceImageMetadata({ size: buffer.byteLength, type: image.type })
+      const { data: publicData } = supabase.storage.from(image.bucket).getPublicUrl(image.path)
 
       return {
         bucket: image.bucket,
@@ -622,9 +750,36 @@ async function prepareReferenceImages({
         mimeType: image.type,
         name: image.name,
         path: image.path,
+        publicUrl: publicData.publicUrl,
       }
     })
   )
+}
+
+async function prepareYunwuReferenceImageUrls(referenceImages: PreparedReferenceImage[], userId: string, setStage: () => void) {
+  if (referenceImages.length === 0) return []
+
+  setStage()
+  const urls: string[] = []
+
+  for (const image of referenceImages) {
+    if (image.publicUrl) {
+      urls.push(image.publicUrl)
+      continue
+    }
+
+    const uploaded = await uploadGeneratedImage({
+      buffer: image.buffer,
+      contentType: image.mimeType,
+      userId,
+    })
+    image.bucket = uploaded.bucket
+    image.path = uploaded.path
+    image.publicUrl = uploaded.publicUrl
+    urls.push(uploaded.publicUrl)
+  }
+
+  return urls
 }
 
 async function cleanupStoredReferenceImages(referenceImages: PreparedReferenceImage[]) {

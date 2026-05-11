@@ -4,6 +4,7 @@ import tls from "node:tls"
 import type { Duplex } from "node:stream"
 import {
   gptImage2ApiModelName,
+  gptImage2AllModelName,
   gptImage2ModelName,
   gptImage2OfficialApiModelName,
   grokImagineVideoModelName,
@@ -18,7 +19,7 @@ export type GenerationKind = "image" | "video"
 
 export interface GenerationResponse {
   ok: true
-  mode: "apimart" | "mengfactory" | "mock"
+  mode: "apimart" | "mengfactory" | "mock" | "yunwu"
   taskId: string
   status: string
   type: GenerationKind
@@ -26,7 +27,7 @@ export interface GenerationResponse {
 
 export interface NormalizedTaskStatus {
   ok: true
-  mode: "apimart" | "mengfactory" | "mock"
+  mode: "apimart" | "mengfactory" | "mock" | "yunwu"
   taskId: string
   status: "submitted" | "processing" | "completed" | "failed" | "partial_completed"
   progress: number
@@ -136,7 +137,7 @@ export function normalizeTaskId(data: unknown) {
 export async function createImageGeneration(request: ApimartImageRequest): Promise<GenerationResponse> {
   const imageCount = normalizeImageCount(request.imageCount)
   const model =
-    isGptImage2Model(request.model) && imageCount > 1
+    isGptImage2Model(request.model) && request.model !== gptImage2AllModelName && imageCount > 1
       ? gptImage2OfficialApiModelName
       : imageModelMap[request.model] ?? request.model
   const apiKey = process.env.APIMART_API_KEY
@@ -194,7 +195,7 @@ export async function uploadApimartImage(file: ApimartUploadFile) {
 export async function createVideoGeneration(request: ApimartVideoRequest): Promise<GenerationResponse> {
   const model = videoModelMap[request.model] ?? request.model
   const apiKey = process.env.APIMART_API_KEY
-  const isVeoModel = model === "veo3.1-fast"
+  const isVeoModel = model === "veo3.1-fast" || model === "veo_3_1-fast"
   const payload = {
     model,
     prompt: request.prompt,

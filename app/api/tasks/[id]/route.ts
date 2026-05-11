@@ -15,6 +15,7 @@ import {
 } from "@/lib/generation-jobs"
 import { getTaskStatus } from "@/lib/apimart"
 import { getMengfactoryVideoTaskStatus } from "@/lib/mengfactory"
+import { getYunwuVideoTaskStatus } from "@/lib/yunwu"
 import { syncApimartGenerationJob } from "@/lib/apimart-task-sync"
 import { requireAuthenticatedUser } from "@/lib/server-supabase"
 
@@ -54,8 +55,11 @@ export async function GET(
       return NextResponse.json(normalizeJobTaskStatus(recoveredJob))
     }
 
-    if (recoveredJob.provider === "mengfactory") {
-      const result = await getMengfactoryVideoTaskStatus(recoveredJob.upstream_task_id).catch(async (error) => {
+    if (recoveredJob.provider === "mengfactory" || (recoveredJob.provider === "yunwu" && recoveredJob.type === "video")) {
+      const result = await (recoveredJob.provider === "yunwu"
+        ? getYunwuVideoTaskStatus(recoveredJob.upstream_task_id)
+        : getMengfactoryVideoTaskStatus(recoveredJob.upstream_task_id)
+      ).catch(async (error) => {
         const message = error instanceof Error ? error.message : "任务状态查询失败。"
         return updateActiveGenerationJob(recoveredJob.id, {
           last_checked_at: new Date().toISOString(),

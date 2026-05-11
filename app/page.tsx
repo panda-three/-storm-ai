@@ -13,6 +13,7 @@ import {
   isServerBackedProjectItem,
   isDeletedProjectItem,
   normalizeProjectItem,
+  sortProjectHistory,
   type ProjectItem,
 } from "@/lib/project-history"
 import {
@@ -118,7 +119,7 @@ function HomeContent() {
 
       return {
         ...current,
-        projects: [normalizeProjectItem(project), ...current.projects.filter((item) => !isSameProject(item, project))],
+        projects: sortProjectHistory([normalizeProjectItem(project), ...current.projects.filter((item) => !isSameProject(item, project))]),
       }
     })
   }, [setAccount])
@@ -130,9 +131,11 @@ function HomeContent() {
 
       return {
         ...current,
-        projects: current.projects.some((item) => isSameProject(item, project))
-          ? current.projects.map((item) => (isSameProject(item, project) ? normalizeProjectItem({ ...item, ...project }) : item))
-          : [normalizeProjectItem(project), ...current.projects],
+        projects: sortProjectHistory(
+          current.projects.some((item) => isSameProject(item, project))
+            ? current.projects.map((item) => (isSameProject(item, project) ? normalizeProjectItem({ ...item, ...project }) : item))
+            : [normalizeProjectItem(project), ...current.projects]
+        ),
       }
     })
   }, [setAccount])
@@ -151,7 +154,7 @@ function HomeContent() {
 
       return {
         ...current,
-        projects: [createDeletedProjectItem(project), ...current.projects.filter((item) => item.id !== id)],
+        projects: sortProjectHistory([createDeletedProjectItem(project), ...current.projects.filter((item) => item.id !== id)]),
       }
     })
   }, [setAccount, setSyncError])

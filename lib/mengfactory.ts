@@ -88,7 +88,8 @@ export async function createMengfactoryImage(request: MengfactoryImageRequest): 
   url.searchParams.set("key", apiKey)
 
   logMengfactory("image input", {
-    model: mengfactoryGeminiImageApiModelName,
+    apiModel: mengfactoryGeminiImageApiModelName,
+    requestModel: request.model,
     prompt: request.prompt,
     quality: request.quality,
     ratio: request.ratio,

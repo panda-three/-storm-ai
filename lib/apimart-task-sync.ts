@@ -1,4 +1,5 @@
 import { getTaskStatus, isApimartRateLimitError } from "@/lib/apimart"
+import { getYunwuVideoTaskStatus, isYunwuRateLimitError } from "@/lib/yunwu"
 import {
   failGenerationJobWithRefund,
   getGenerationJobExpiresAt,
@@ -32,7 +33,7 @@ export async function syncApimartGenerationJob(
   job: GenerationJob,
   { mode = "scheduled" }: { mode?: "interactive" | "scheduled" } = {}
 ): Promise<SyncApimartGenerationJobResult> {
-  if (job.provider !== "apimart" || !job.upstream_task_id || isTerminalGenerationJobStatus(job.status)) {
+  if (!isRemoteAsyncProvider(job.provider) || !job.upstream_task_id || isTerminalGenerationJobStatus(job.status)) {
     return { job, locked: false, status: "skipped" }
   }
 
@@ -51,7 +52,7 @@ export async function syncApimartGenerationJob(
   }
 
   try {
-    const result = await getTaskStatus(lockedJob.upstream_task_id)
+    const result = await getRemoteTaskStatus(lockedJob)
     const upstreamResultUrls = uniqueUrls(lockedJob.type === "image" ? result.imageUrls : result.videoUrl ? [result.videoUrl] : [])
     const expectedResultCount = lockedJob.type === "image" ? lockedJob.expected_result_count : 1
     const limitedUpstreamResultUrls = upstreamResultUrls.slice(0, expectedResultCount)
@@ -127,10 +128,11 @@ export async function syncApimartGenerationJob(
       sync_locked_until: null,
     })
 
-    if (!isApimartRateLimitError(message)) {
-      console.warn("[APIMart Sync] task query failed", {
+    if (!isRemoteRateLimitError(lockedJob.provider, message)) {
+      console.warn("[Generation Sync] task query failed", {
         error: message,
         jobId: lockedJob.id,
+        provider: lockedJob.provider,
         upstreamTaskId: lockedJob.upstream_task_id,
       })
     }
@@ -140,13 +142,13 @@ export async function syncApimartGenerationJob(
 }
 
 export function shouldSyncJobNow(job: GenerationJob) {
-  if (isTerminalGenerationJobStatus(job.status) || job.provider !== "apimart" || !job.upstream_task_id) return false
+  if (isTerminalGenerationJobStatus(job.status) || !isRemoteAsyncProvider(job.provider) || !job.upstream_task_id) return false
   if (!job.next_check_at) return true
   return Date.parse(job.next_check_at) <= Date.now()
 }
 
 export function shouldSyncJobInteractively(job: GenerationJob) {
-  if (isTerminalGenerationJobStatus(job.status) || job.provider !== "apimart" || !job.upstream_task_id) return false
+  if (isTerminalGenerationJobStatus(job.status) || !isRemoteAsyncProvider(job.provider) || !job.upstream_task_id) return false
   if (job.last_sync_error && job.next_check_at && Date.parse(job.next_check_at) > Date.now()) return false
   if (!job.last_checked_at) return true
   return Date.now() - Date.parse(job.last_checked_at) >= interactiveMinCheckMs
@@ -201,7 +203,7 @@ export async function mirrorApimartImageResults(job: GenerationJob): Promise<Syn
 
 export function shouldMirrorApimartImageResults(job: GenerationJob) {
   return (
-    job.provider === "apimart" &&
+    (job.provider === "apimart" || job.provider === "yunwu") &&
     job.type === "image" &&
     isTerminalGenerationJobStatus(job.status) &&
     job.status !== "failed" &&
@@ -211,6 +213,26 @@ export function shouldMirrorApimartImageResults(job: GenerationJob) {
 
 function uniqueUrls(urls: string[]) {
   return Array.from(new Set(urls.filter((url) => typeof url === "string" && url.length > 0)))
+}
+
+function isRemoteAsyncProvider(provider: string) {
+  return provider === "apimart" || provider === "yunwu"
+}
+
+function getRemoteTaskStatus(job: GenerationJob) {
+  if (!job.upstream_task_id) {
+    throw new Error("缺少上游任务 ID。")
+  }
+
+  if (job.provider === "yunwu") {
+    return getYunwuVideoTaskStatus(job.upstream_task_id)
+  }
+
+  return getTaskStatus(job.upstream_task_id)
+}
+
+function isRemoteRateLimitError(provider: string, message: string) {
+  return provider === "yunwu" ? isYunwuRateLimitError(message) : isApimartRateLimitError(message)
 }
 
 function calculatePartialRefundAmount(amount: number, successCount: number, expectedResultCount: number) {
