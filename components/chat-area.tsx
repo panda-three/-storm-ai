@@ -11,7 +11,6 @@ import {
   getImageRatiosForSelection,
   imageModelOptions,
   imageModelSettings,
-  isMengfactoryGptImage2Model,
   videoModelOptions,
   videoModelSettings,
 } from "@/lib/model-options"
@@ -1008,7 +1007,6 @@ function ImageWorkspace({
     quality,
     type: "image",
   })
-  const referenceImagesDisabled = isMengfactoryGptImage2Model(model)
   const membershipCoversQuality = isMembershipActive(membershipTier, membershipExpiresAt) && membershipFreeImageQualities.includes(quality)
   const estimatedCredits = currentPricing ? (membershipCoversQuality ? 0 : calculatePricingCredits(currentPricing) * parsedImageCount) : null
 
@@ -1036,12 +1034,6 @@ function ImageWorkspace({
 
   const handleReferenceImageChange = async (files: FileList | null) => {
     if (!files?.length) return
-
-    if (referenceImagesDisabled) {
-      setError("GPT-Image-2 当前仅支持文字生成图片，请切换模型后再添加参考图。")
-      if (referenceInputRef.current) referenceInputRef.current.value = ""
-      return
-    }
 
     const availableSlots = maxReferenceImages - referenceImages.length
     const selectedFiles = Array.from(files).slice(0, Math.max(availableSlots, 0))
@@ -1095,7 +1087,7 @@ function ImageWorkspace({
   const handleReferenceDragEnter = (event: DragEvent<HTMLDivElement>) => {
     if (!hasDraggedFiles(event)) return
     event.preventDefault()
-    if (!isGenerating && !referenceImagesDisabled) {
+    if (!isGenerating) {
       setIsReferenceDragActive(true)
     }
   }
@@ -1103,9 +1095,8 @@ function ImageWorkspace({
   const handleReferenceDragOver = (event: DragEvent<HTMLDivElement>) => {
     if (!hasDraggedFiles(event)) return
     event.preventDefault()
-    event.dataTransfer.dropEffect =
-      isGenerating || referenceImagesDisabled || referenceImages.length >= maxReferenceImages ? "none" : "copy"
-    if (!isGenerating && !referenceImagesDisabled) {
+    event.dataTransfer.dropEffect = isGenerating || referenceImages.length >= maxReferenceImages ? "none" : "copy"
+    if (!isGenerating) {
       setIsReferenceDragActive(true)
     }
   }
@@ -1120,7 +1111,7 @@ function ImageWorkspace({
     event.preventDefault()
     setIsReferenceDragActive(false)
 
-    if (isGenerating || referenceImagesDisabled) return
+    if (isGenerating) return
     handleReferenceImageChange(event.dataTransfer.files)
   }
 
@@ -1151,11 +1142,6 @@ function ImageWorkspace({
 
     if (!currentPricing) {
       setError("当前模型参数未配置价格，请联系管理员配置后再生成。")
-      return
-    }
-
-    if (referenceImagesDisabled && referenceImages.length > 0) {
-      setError("GPT-Image-2 当前仅支持文字生成图片，请先移除参考图。")
       return
     }
 
@@ -1305,9 +1291,9 @@ function ImageWorkspace({
                 type="file"
               />
               <UploadColumn
-                disabled={isGenerating || referenceImagesDisabled || referenceImages.length >= maxReferenceImages}
+                disabled={isGenerating || referenceImages.length >= maxReferenceImages}
                 isActive={isReferenceDragActive}
-                label={referenceImagesDisabled ? "仅文字生图" : "添加参考图"}
+                label="添加参考图"
                 onClick={() => referenceInputRef.current?.click()}
                 referenceImages={referenceImages}
                 onRemove={handleReferenceImageRemove}
@@ -1338,11 +1324,6 @@ function ImageWorkspace({
                         setModel(value)
                         setQuality(settings.qualities[1] ?? settings.qualities[0])
                         setRatio(settings.ratios[0])
-                        if (isMengfactoryGptImage2Model(value) && referenceImages.length > 0) {
-                          setError("GPT-Image-2 当前仅支持文字生成图片，请先移除参考图。")
-                        } else if (error === "GPT-Image-2 当前仅支持文字生成图片，请先移除参考图。") {
-                          setError("")
-                        }
                       }}
                       options={imageModelOptions.map((option) => ({
                         label: getOptionLabel(option),
@@ -1382,7 +1363,7 @@ function ImageWorkspace({
                   <button
                     aria-label={isGenerating ? "生成中" : "生成图片"}
                     className="inline-flex h-12 min-w-12 cursor-pointer items-center justify-center gap-2 rounded-full bg-slate-950 px-4 text-sm font-semibold text-white transition-colors hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/60 disabled:cursor-not-allowed disabled:opacity-50 sm:px-5"
-                    disabled={isGenerating || !billingReady || !currentPricing || (referenceImagesDisabled && referenceImages.length > 0)}
+                    disabled={isGenerating || !billingReady || !currentPricing}
                     onClick={handleGenerate}
                     type="button"
                   >

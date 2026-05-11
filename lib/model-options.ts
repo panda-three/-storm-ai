@@ -1,7 +1,6 @@
 export const gptImage2ModelName = "GPT-Image-2"
 export const gptImage2ApiModelName = "gpt-image-2"
 export const gptImage2OfficialApiModelName = "gpt-image-2-official"
-export const mengfactoryGptImage2ApiModelName = "gpt-image-2-all"
 export const gptImage2Supported4KRatios = ["16:9", "9:16", "2:1", "1:2", "21:9", "9:21"]
 export const mengfactoryGeminiImageModelName = "Gemini 3.1 Flash Image Preview"
 export const mengfactoryGeminiImageApiModelName = "gemini-3.1-flash-image-preview"
@@ -33,19 +32,11 @@ export const imageModelSettings: Record<
 }
 
 export function isGptImage2Model(model: string) {
-  return model === gptImage2ModelName || model === gptImage2ApiModelName || model === mengfactoryGptImage2ApiModelName
+  return model === gptImage2ModelName || model === gptImage2ApiModelName
 }
 
 export function isMengfactoryGeminiImageModel(model: string) {
   return model === mengfactoryGeminiImageModelName || model === mengfactoryGeminiImageApiModelName
-}
-
-export function isMengfactoryGptImage2Model(model: string) {
-  return isGptImage2Model(model)
-}
-
-export function isMengfactoryImageModel(model: string) {
-  return isMengfactoryGeminiImageModel(model) || isMengfactoryGptImage2Model(model)
 }
 
 export function isGptImage2Restricted4K(quality: string, model: string) {

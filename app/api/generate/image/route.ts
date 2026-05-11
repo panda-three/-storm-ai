@@ -9,10 +9,8 @@ import {
 } from "@/lib/generation-jobs"
 import { createImageGeneration, normalizeImageResolution, uploadApimartImage } from "@/lib/apimart"
 import {
-  createMengfactoryGptImage,
   createMengfactoryImage,
   type MengfactoryGeneratedImage,
-  type MengfactoryGptGeneratedImage,
 } from "@/lib/mengfactory"
 import {
   calculatePricingCredits,
@@ -22,7 +20,6 @@ import {
   getSupabaseServerClient,
   describeServerError,
   deleteGeneratedImageByPublicUrl,
-  persistRemoteGeneratedImage,
   refundGenerationCredits,
   requireAuthenticatedUser,
   uploadGeneratedImage,
@@ -30,8 +27,6 @@ import {
 import {
   gptImage2Supported4KRatios,
   isMengfactoryGeminiImageModel,
-  isMengfactoryGptImage2Model,
-  isMengfactoryImageModel,
   isValidImageRatioForQuality,
 } from "@/lib/model-options"
 import {
@@ -41,8 +36,6 @@ import {
   type StoredReferenceImage,
   validateReferenceImageMetadata,
 } from "@/lib/reference-images"
-
-type MengfactoryImageResult = MengfactoryGeneratedImage | MengfactoryGptGeneratedImage
 
 interface PreparedReferenceImage {
   buffer: Buffer
@@ -103,13 +96,6 @@ export async function POST(request: Request) {
       )
     }
 
-    if (isMengfactoryGptImage2Model(model) && (referenceFiles.length > 0 || storedReferenceImages.length > 0)) {
-      return NextResponse.json(
-        { ok: false, error: "GPT-Image-2 当前仅支持文字生成图片，请先移除参考图。" },
-        { status: 400 }
-      )
-    }
-
     stage = "load_pricing"
     const pricing = await loadImagePricing({ model, quality })
     if (!pricing) {
@@ -150,7 +136,7 @@ export async function POST(request: Request) {
       billingReason = `${billingReason} · 会员免费`
     }
 
-    const isMengfactoryImage = isMengfactoryImageModel(model)
+    const isMengfactoryImage = isMengfactoryGeminiImageModel(model)
     const provider = isMengfactoryImage ? "mengfactory" : "apimart"
     stage = "prepare_reference_images"
     preparedReferenceImages = await prepareReferenceImages({
@@ -187,49 +173,31 @@ export async function POST(request: Request) {
 
     if (isMengfactoryImage) {
       stage = "submit_mengfactory_generation"
-      const generatedImages: PromiseSettledResult<MengfactoryImageResult>[] = isMengfactoryGptImage2Model(model)
-        ? await createMengfactoryGptImage({
-            imageCount,
+      const generatedImages: PromiseSettledResult<MengfactoryGeneratedImage>[] = await Promise.allSettled(
+        Array.from({ length: imageCount }, () =>
+          createMengfactoryImage({
             model,
             prompt,
+            quality,
             ratio,
+            referenceImages: referenceBuffers,
           })
-            .then((images) => images.map((image) => ({ status: "fulfilled" as const, value: image })))
-            .catch((error) =>
-              Array.from({ length: imageCount }, () => ({
-                reason: error,
-                status: "rejected" as const,
-              }))
-            )
-        : await Promise.allSettled(
-            Array.from({ length: imageCount }, () =>
-              createMengfactoryImage({
-                model,
-                prompt,
-                quality,
-                ratio,
-                referenceImages: referenceBuffers,
-              })
-            )
-          )
+        )
+      )
       const successfulImages = generatedImages
-        .filter((result): result is PromiseFulfilledResult<MengfactoryImageResult> => result.status === "fulfilled")
+        .filter((result): result is PromiseFulfilledResult<MengfactoryGeneratedImage> => result.status === "fulfilled")
         .map((result) => result.value)
       const imageUrls: string[] = []
 
       try {
         stage = "persist_mengfactory_results"
         for (const generated of successfulImages) {
-          if ("url" in generated && generated.url) {
-            imageUrls.push(await persistRemoteGeneratedImage({ sourceUrl: generated.url, userId }))
-          } else if (generated.buffer) {
-            const uploaded = await uploadGeneratedImage({
-              buffer: generated.buffer,
-              contentType: generated.mimeType,
-              userId,
-            })
-            imageUrls.push(uploaded.publicUrl)
-          }
+          const uploaded = await uploadGeneratedImage({
+            buffer: generated.buffer,
+            contentType: generated.mimeType,
+            userId,
+          })
+          imageUrls.push(uploaded.publicUrl)
         }
 
         if (imageUrls.length === 0) {
