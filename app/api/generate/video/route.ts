@@ -18,10 +18,22 @@ import {
   legacyApimartVeoVideoModelName,
   videoModelSettings,
 } from "@/lib/model-options"
+import {
+  getReferenceImageBucket,
+  getReferenceImagePathPrefix,
+  maxReferenceImages,
+  type StoredReferenceImage,
+  validateReferenceImageMetadata,
+} from "@/lib/reference-images"
 
-const maxReferenceImages = 4
-const maxReferenceImageBytes = 10 * 1024 * 1024
-const supportedReferenceImageTypes = ["image/jpeg", "image/png", "image/webp"]
+interface PreparedVideoReferenceImage {
+  bucket?: string
+  buffer: Buffer
+  mimeType: string
+  name: string
+  path?: string
+  publicUrl?: string
+}
 
 export async function POST(request: Request) {
   let billingReason = ""
@@ -29,6 +41,8 @@ export async function POST(request: Request) {
   let jobId = ""
   let upstreamTaskId = ""
   let userId = ""
+  let preparedReferenceImages: PreparedVideoReferenceImage[] = []
+  let cleanupPreparedReferenceImages = true
 
   try {
     const auth = await requireAuthenticatedUser(request)
@@ -47,7 +61,8 @@ export async function POST(request: Request) {
     const quality = String(getValue("quality") ?? "720P")
     const aspectRatio = String(getValue("aspectRatio") ?? "16:9")
     clientRequestId = String(getValue("clientRequestId") ?? "").trim()
-    const rawReferenceImages = body instanceof FormData ? getReferenceImageLogs(body) : []
+    const referenceFiles = body instanceof FormData ? body.getAll("referenceImages").filter(isImageFile) : []
+    const storedReferenceImages = body instanceof FormData ? [] : parseStoredReferenceImages(getValue("referenceImages"))
     const modelSettings = videoModelSettings[model]
 
     if (!modelSettings) {
@@ -60,6 +75,16 @@ export async function POST(request: Request) {
 
     if (!modelSettings.aspectRatios.includes(aspectRatio)) {
       return NextResponse.json({ ok: false, error: "请选择当前模型支持的视频比例。" }, { status: 400 })
+    }
+
+    validateReferenceFiles(referenceFiles)
+    validateStoredReferenceImages(storedReferenceImages, userId)
+
+    if (referenceFiles.length > 0 && storedReferenceImages.length > 0) {
+      return NextResponse.json(
+        { ok: false, error: "请不要同时提交参考图文件和参考图存储地址。" },
+        { status: 400 }
+      )
     }
 
     const pricing = await loadVideoPricing({
@@ -83,7 +108,14 @@ export async function POST(request: Request) {
       quality,
       aspectRatio,
       clientRequestId,
-      referenceImages: rawReferenceImages,
+      referenceImages: [
+        ...referenceFiles.map(toFileLog),
+        ...storedReferenceImages.map((image) => ({
+          path: image.path,
+          size: image.size,
+          type: image.type,
+        })),
+      ],
       userId: maskId(userId),
     })
 
@@ -100,10 +132,14 @@ export async function POST(request: Request) {
     })
     jobId = job.id
 
-    const referenceImages = body instanceof FormData ? getReferenceImages(body) : []
+    preparedReferenceImages = await prepareReferenceImages({
+      referenceFiles,
+      storedReferenceImages,
+      userId,
+    })
 
     if (isMengfactoryVeoVideoModel(model)) {
-      const imageUrls = await uploadReferenceImagesToPublicUrls(referenceImages, userId)
+      const imageUrls = getPreparedReferencePublicUrls(preparedReferenceImages)
       const generationInput = {
         imageUrls,
         model,
@@ -115,6 +151,7 @@ export async function POST(request: Request) {
 
       const result = await createMengfactoryVideo(generationInput)
       upstreamTaskId = result.taskId
+      cleanupPreparedReferenceImages = false
       const nextJob = await updateActiveGenerationJob(job.id, {
         next_check_at: new Date(Date.now() + 5000).toISOString(),
         status: result.status === "submitted" ? "submitted" : "processing",
@@ -137,13 +174,7 @@ export async function POST(request: Request) {
     }
 
     const generationInput = {
-      referenceImages: await Promise.all(referenceImages.map(async (image) => ({
-        url: await uploadApimartImage({
-          buffer: Buffer.from(await image.arrayBuffer()),
-          filename: image.name,
-          mimeType: image.type,
-        }),
-      }))),
+      referenceImages: await uploadApimartReferenceImages(preparedReferenceImages),
       model,
       prompt,
       duration: normalizeVideoDuration(duration),
@@ -216,6 +247,10 @@ export async function POST(request: Request) {
       },
       { status: message.includes("登录") ? 401 : 500 }
     )
+  } finally {
+    if (cleanupPreparedReferenceImages) {
+      await cleanupStoredReferenceImages(preparedReferenceImages)
+    }
   }
 }
 
@@ -263,42 +298,165 @@ async function loadVideoPricing({
   return (data?.[0] ?? null) as ModelPricing | null
 }
 
-function getReferenceImages(formData: FormData) {
-  const images = formData.getAll("referenceImages").filter(isImageFile)
+function parseStoredReferenceImages(value: unknown): StoredReferenceImage[] {
+  if (!Array.isArray(value)) return []
 
-  if (images.length > maxReferenceImages) {
+  return value.map((item) => {
+    const record = item && typeof item === "object" ? item as Record<string, unknown> : {}
+
+    return {
+      bucket: String(record.bucket ?? ""),
+      name: String(record.name ?? "reference-image"),
+      path: String(record.path ?? ""),
+      size: Number(record.size),
+      type: String(record.type ?? ""),
+    }
+  })
+}
+
+function validateReferenceFiles(referenceImages: File[]) {
+  if (referenceImages.length > maxReferenceImages) {
     throw new Error(`参考图最多上传 ${maxReferenceImages} 张。`)
   }
 
-  for (const image of images) {
-    if (!supportedReferenceImageTypes.includes(image.type)) {
-      throw new Error("参考图仅支持 JPG、PNG、WebP 格式。")
-    }
-
-    if (image.size > maxReferenceImageBytes) {
-      throw new Error("单张参考图不能超过 10MB。")
-    }
+  for (const image of referenceImages) {
+    validateReferenceImageMetadata({ size: image.size, type: image.type })
   }
-
-  return images
 }
 
-async function uploadReferenceImagesToPublicUrls(referenceImages: File[], userId: string) {
-  return Promise.all(
-    referenceImages.map(async (image) => {
-      const uploadedUrl = await uploadGeneratedImage({
-        buffer: Buffer.from(await image.arrayBuffer()),
-        contentType: image.type,
-        userId,
-      })
+function validateStoredReferenceImages(referenceImages: StoredReferenceImage[], userId: string) {
+  if (referenceImages.length > maxReferenceImages) {
+    throw new Error(`参考图最多上传 ${maxReferenceImages} 张。`)
+  }
 
-      return uploadedUrl.publicUrl
+  const expectedBucket = getReferenceImageBucket()
+  const expectedPrefix = getReferenceImagePathPrefix(userId)
+
+  for (const image of referenceImages) {
+    validateReferenceImageMetadata({ size: image.size, type: image.type })
+
+    if (image.bucket !== expectedBucket) {
+      throw new Error("参考图存储位置无效。")
+    }
+
+    if (!image.path || !image.path.startsWith(expectedPrefix) || image.path.includes("..")) {
+      throw new Error("参考图路径无效。")
+    }
+  }
+}
+
+async function prepareReferenceImages({
+  referenceFiles,
+  storedReferenceImages,
+  userId,
+}: {
+  referenceFiles: File[]
+  storedReferenceImages: StoredReferenceImage[]
+  userId: string
+}): Promise<PreparedVideoReferenceImage[]> {
+  if (referenceFiles.length > 0) {
+    return Promise.all(
+      referenceFiles.map(async (image) => {
+        const buffer = Buffer.from(await image.arrayBuffer())
+        const uploaded = await uploadGeneratedImage({
+          buffer,
+          contentType: image.type,
+          userId,
+        })
+
+        return {
+          bucket: uploaded.bucket,
+          buffer,
+          mimeType: image.type,
+          name: image.name,
+          path: uploaded.path,
+          publicUrl: uploaded.publicUrl,
+        }
+      })
+    )
+  }
+
+  if (storedReferenceImages.length === 0) return []
+
+  const supabase = getSupabaseServerClient()
+
+  return Promise.all(
+    storedReferenceImages.map(async (image) => {
+      const { data, error } = await supabase.storage.from(image.bucket).download(image.path)
+
+      if (error) {
+        throw new Error(describeServerError(error, "读取参考图失败。"), { cause: error })
+      }
+
+      const buffer = Buffer.from(await data.arrayBuffer())
+      validateReferenceImageMetadata({ size: buffer.byteLength, type: image.type })
+      const { data: publicData } = supabase.storage.from(image.bucket).getPublicUrl(image.path)
+
+      return {
+        bucket: image.bucket,
+        buffer,
+        mimeType: image.type,
+        name: image.name,
+        path: image.path,
+        publicUrl: publicData.publicUrl,
+      }
     })
   )
 }
 
-function getReferenceImageLogs(formData: FormData) {
-  return formData.getAll("referenceImages").filter(isImageFile).map(toFileLog)
+function getPreparedReferencePublicUrls(referenceImages: PreparedVideoReferenceImage[]) {
+  const urls = referenceImages.map((image) => image.publicUrl).filter((url): url is string => Boolean(url))
+
+  if (urls.length !== referenceImages.length) {
+    throw new Error("参考图缺少公开访问地址。")
+  }
+
+  return urls
+}
+
+async function uploadApimartReferenceImages(referenceImages: PreparedVideoReferenceImage[]) {
+  if (referenceImages.length === 0) return []
+
+  const urls = await Promise.all(
+    referenceImages.map(async (image) =>
+      uploadApimartImage({
+        buffer: image.buffer,
+        filename: image.name,
+        mimeType: image.mimeType,
+      })
+    )
+  )
+
+  const validUrls = urls.filter(Boolean)
+  if (validUrls.length !== referenceImages.length) {
+    throw new Error(`参考图上传到 APIMART 失败：${validUrls.length}/${referenceImages.length} 张返回了有效 URL。`)
+  }
+
+  return validUrls.map((url) => ({ url }))
+}
+
+async function cleanupStoredReferenceImages(referenceImages: PreparedVideoReferenceImage[]) {
+  const storedImages = referenceImages.filter((image) => image.bucket && image.path)
+  if (storedImages.length === 0) return
+
+  const pathsByBucket = new Map<string, string[]>()
+  storedImages.forEach((image) => {
+    if (!image.bucket || !image.path) return
+    pathsByBucket.set(image.bucket, [...(pathsByBucket.get(image.bucket) ?? []), image.path])
+  })
+
+  await Promise.all(
+    Array.from(pathsByBucket.entries()).map(async ([bucket, paths]) => {
+      const { error } = await getSupabaseServerClient().storage.from(bucket).remove(paths)
+      if (error) {
+        console.warn("[Generate Video] reference image cleanup failed", {
+          bucket,
+          error: describeServerError(error, "清理参考图失败。"),
+          paths,
+        })
+      }
+    })
+  )
 }
 
 function isImageFile(value: FormDataEntryValue | null): value is File {

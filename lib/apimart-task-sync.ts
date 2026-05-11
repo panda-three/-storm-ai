@@ -19,7 +19,8 @@ import {
 
 const baseRetryMs = 60 * 1000
 const maxRetryMs = 30 * 60 * 1000
-const interactiveMinCheckMs = 10 * 1000
+const interactiveMinCheckMs = 4 * 1000
+const interactiveLockMs = 45 * 1000
 
 export interface SyncApimartGenerationJobResult {
   job: GenerationJob
@@ -39,7 +40,7 @@ export async function syncApimartGenerationJob(
     return { job, locked: false, status: "skipped" }
   }
 
-  const lockedJob = await lockGenerationJobForSync(job.id)
+  const lockedJob = await lockGenerationJobForSync(job.id, mode === "interactive" ? interactiveLockMs : undefined)
   if (!lockedJob) {
     const latestJob = await loadGenerationJobForUser({ taskId: job.id, userId: job.user_id })
     return { job: latestJob ?? job, locked: false, status: "skipped" }
@@ -146,6 +147,7 @@ export function shouldSyncJobNow(job: GenerationJob) {
 
 export function shouldSyncJobInteractively(job: GenerationJob) {
   if (isTerminalGenerationJobStatus(job.status) || job.provider !== "apimart" || !job.upstream_task_id) return false
+  if (job.last_sync_error && job.next_check_at && Date.parse(job.next_check_at) > Date.now()) return false
   if (!job.last_checked_at) return true
   return Date.now() - Date.parse(job.last_checked_at) >= interactiveMinCheckMs
 }

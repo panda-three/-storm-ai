@@ -642,6 +642,7 @@ interface TaskStatusResponse {
   error?: string
   orphaned?: boolean
   retryable?: boolean
+  retryAfterMs?: number
   taskError?: string
 }
 
@@ -664,6 +665,32 @@ function isRateLimitTaskError(task: TaskStatusResponse) {
 
 function isOrphanedLegacyTaskMessage(message: string) {
   return message.includes("旧任务没有本地生成记录") || message.includes("已停止自动查询")
+}
+
+function getTaskRetryAfterMs(task: Pick<TaskStatusResponse, "retryAfterMs"> | null | undefined) {
+  const retryAfterMs = Number(task?.retryAfterMs)
+  if (!Number.isFinite(retryAfterMs) || retryAfterMs <= 0) return 0
+  return Math.min(5 * 60 * 1000, Math.max(1000, retryAfterMs))
+}
+
+function getPendingTaskPollDelayMs(attempts: number, task?: TaskStatusResponse) {
+  const retryAfterMs = getTaskRetryAfterMs(task)
+  if (retryAfterMs > 0) return retryAfterMs
+
+  if (attempts < 12) return 5000
+  if (attempts < 28) return 15000
+  return 30000
+}
+
+function getFailedTaskPollDelayMs(attempts: number, task?: TaskStatusResponse) {
+  const retryAfterMs = getTaskRetryAfterMs(task)
+  if (retryAfterMs > 0) return retryAfterMs
+
+  return Math.min(5 * 60 * 1000, 15000 * 2 ** Math.min(attempts, 4))
+}
+
+function getMaxTaskPollAttempts(taskProjects: ProjectItem[]) {
+  return taskProjects.some((item) => item.type === "视频") ? 160 : 72
 }
 
 function resolveImageTaskProject(task: TaskStatusResponse, fallbackUrl = "") {
@@ -745,6 +772,7 @@ export function ChatArea({
 
     projectsByTaskId.forEach((taskProjects, taskId) => {
       let attempts = 0
+      const maxAttempts = getMaxTaskPollAttempts(taskProjects)
       const stopTaskProjects = (taskError: string) => {
         taskProjects.forEach((item) => {
           onProjectUpdate({
@@ -794,8 +822,8 @@ export function ChatArea({
                 : resolveImageTaskProject(task, taskProjects[0].previewUrl)
 
             if (resolved.status === "生成中") {
-              if (attempts < 20) {
-                timers.push(window.setTimeout(reconcile, 60000))
+              if (attempts < maxAttempts) {
+                timers.push(window.setTimeout(reconcile, getPendingTaskPollDelayMs(attempts, task)))
               }
               return
             }
@@ -822,13 +850,13 @@ export function ChatArea({
               taskId,
             })
 
-            if (active && attempts < 6 && !isLegacyUpstreamTaskId(taskId)) {
-              timers.push(window.setTimeout(reconcile, Math.min(120000, 15000 * 2 ** Math.min(attempts, 3))))
+            if (active && attempts < maxAttempts && !isLegacyUpstreamTaskId(taskId)) {
+              timers.push(window.setTimeout(reconcile, getFailedTaskPollDelayMs(attempts)))
             }
           })
       }
 
-      timers.push(window.setTimeout(reconcile, 30000))
+      timers.push(window.setTimeout(reconcile, 5000))
     })
 
     return () => {
@@ -1610,24 +1638,24 @@ function VideoWorkspace({
     onSectionChange("history")
 
     try {
-      const formData = new FormData()
-      formData.append("prompt", trimmedPrompt)
-      formData.append("model", model)
-      formData.append("duration", duration)
-      formData.append("quality", quality)
-      formData.append("aspectRatio", aspectRatio)
-      formData.append("clientRequestId", clientRequestId)
-      referenceImages.forEach((image) => {
-        formData.append("referenceImages", image.file, image.name)
-      })
       const accessToken = await getCurrentAccessToken()
+      const storedReferenceImages = await uploadReferenceImagesForGeneration(referenceImages, accessToken)
 
       const response = await fetch("/api/generate/video", {
         headers: {
           Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
         },
         method: "POST",
-        body: formData,
+        body: JSON.stringify({
+          prompt: trimmedPrompt,
+          model,
+          duration,
+          quality,
+          aspectRatio,
+          clientRequestId,
+          referenceImages: storedReferenceImages,
+        }),
       }).catch((error) => {
         throw new Error(`视频接口请求失败：${getErrorMessage(error, "请检查本地服务或网络连接。")}`)
       })

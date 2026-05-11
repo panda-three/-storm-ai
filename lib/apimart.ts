@@ -33,6 +33,7 @@ export interface NormalizedTaskStatus {
   imageUrls: string[]
   videoUrl: string
   taskError: string
+  retryAfterMs?: number
   raw: unknown
 }
 

@@ -559,8 +559,26 @@ export function normalizeJobTaskStatus(job: GenerationJob): NormalizedTaskStatus
     imageUrls: isImage ? job.result_urls : [],
     videoUrl: isImage ? "" : job.result_urls[0] ?? "",
     taskError: job.task_error ?? "",
+    retryAfterMs: getGenerationJobRetryAfterMs(job),
     raw: job,
   }
+}
+
+export function getGenerationJobRetryAfterMs(job: GenerationJob) {
+  if (job.sync_locked_until) {
+    const lockRetryAfterMs = Date.parse(job.sync_locked_until) - Date.now()
+    if (Number.isFinite(lockRetryAfterMs) && lockRetryAfterMs > 0) {
+      return Math.min(lockRetryAfterMs, 30 * 1000)
+    }
+  }
+
+  if (!job.last_sync_error) return undefined
+  if (isTerminalGenerationJobStatus(job.status) || !job.next_check_at) return undefined
+
+  const retryAfterMs = Date.parse(job.next_check_at) - Date.now()
+  if (!Number.isFinite(retryAfterMs) || retryAfterMs <= 0) return undefined
+
+  return retryAfterMs
 }
 
 export function isTerminalGenerationJobStatus(status: GenerationJobStatus) {
