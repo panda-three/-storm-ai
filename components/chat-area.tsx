@@ -387,8 +387,8 @@ function getNowLabel() {
 }
 
 function getOptionLabel(option: string) {
-  if (option === "Gemini 3.1 Flash Image Preview") return "Gemini3香蕉pro（MengFactory）"
-  if (option === "gemini-3.1-flash-image-preview") return "gemini-3.1-flash-image-preview（云雾）"
+  if (option === "Gemini 3.1 Flash Image Preview") return "Gemini3香蕉pro（M）"
+  if (option === "gemini-3.1-flash-image-preview") return "gemini-3.1-flash-image-preview（Y）"
   if (option === "1") return "一张"
   if (option === "2") return "两张"
   if (option === "3") return "三张"
