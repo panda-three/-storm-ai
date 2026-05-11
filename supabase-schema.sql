@@ -155,27 +155,19 @@ begin
     return jsonb_build_object('ok', true, 'claimed', false);
   end if;
 
-  if v_existing.revoked_at is not null then
-    if v_existing.session_id = v_session_id then
-      raise exception '该登录会话已失效，请重新登录。';
-    end if;
+  update public.user_active_sessions
+  set
+    session_id = v_session_id,
+    device_label = v_device_label,
+    created_at = now(),
+    last_seen_at = now(),
+    revoked_at = null,
+    revoked_reason = null,
+    revoked_by = null,
+    updated_at = now()
+  where user_id = v_user_id;
 
-    update public.user_active_sessions
-    set
-      session_id = v_session_id,
-      device_label = v_device_label,
-      created_at = now(),
-      last_seen_at = now(),
-      revoked_at = null,
-      revoked_reason = null,
-      revoked_by = null,
-      updated_at = now()
-    where user_id = v_user_id;
-
-    return jsonb_build_object('ok', true, 'claimed', true);
-  end if;
-
-  raise exception '该账号已在其他设备登录，请先在原设备退出或联系管理员。';
+  return jsonb_build_object('ok', true, 'claimed', true);
 end;
 $$;
 

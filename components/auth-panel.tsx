@@ -15,7 +15,13 @@ import {
   X,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { claimCurrentAuthSession, getSupabaseClient, isSupabaseConfigured } from "@/lib/supabase"
+import {
+  claimCurrentAuthSession,
+  clearSupabaseLocalSession,
+  getSupabaseClient,
+  getSupabaseErrorMessage,
+  isSupabaseConfigured,
+} from "@/lib/supabase"
 import { cn } from "@/lib/utils"
 
 interface AuthPanelProps {
@@ -337,6 +343,8 @@ export function AuthPanel({ onAuthed, variant = "page" }: AuthPanelProps) {
 
         await claimCurrentAuthSession()
       } else {
+        await clearSupabaseLocalSession(supabase)
+
         const { error } = await supabase.auth.signInWithPassword({
           email: normalizedEmail,
           password,
@@ -354,7 +362,7 @@ export function AuthPanel({ onAuthed, variant = "page" }: AuthPanelProps) {
 
       onAuthed()
     } catch (error) {
-      setError(error instanceof Error ? error.message : "认证失败，请稍后重试。")
+      setError(getSupabaseErrorMessage(error, "认证失败，请稍后重试。"))
     } finally {
       setLoading(false)
     }

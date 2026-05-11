@@ -18,6 +18,8 @@ import {
 import {
   assertCurrentAuthSession,
   claimCurrentAuthSession,
+  clearSupabaseLocalSession,
+  getSupabaseErrorMessage,
   getSupabaseClient,
   loadSupabaseAccount,
   releaseCurrentAuthSession,
@@ -27,12 +29,7 @@ import {
 export type AccountStatus = "idle" | "loading" | "ready" | "error"
 
 export function getErrorMessage(error: unknown, fallback: string) {
-  if (error instanceof Error && error.message) return error.message
-  if (typeof error === "object" && error !== null && "message" in error) {
-    const message = (error as { message?: unknown }).message
-    if (typeof message === "string" && message) return message
-  }
-  return fallback
+  return getSupabaseErrorMessage(error, fallback)
 }
 
 function isInvalidRefreshTokenError(error: unknown) {
@@ -41,11 +38,7 @@ function isInvalidRefreshTokenError(error: unknown) {
 }
 
 async function clearLocalSupabaseSession(supabase: SupabaseClient) {
-  try {
-    await supabase.auth.signOut({ scope: "local" })
-  } catch {
-    // Ignore cleanup failures; the next login will overwrite the local auth state.
-  }
+  await clearSupabaseLocalSession(supabase)
 }
 
 function createAccountFromRemote(userId: string, remoteAccount: Awaited<ReturnType<typeof loadSupabaseAccount>>): LocalAccountData {

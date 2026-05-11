@@ -133,6 +133,51 @@ export function getSupabaseClient() {
   return browserClient
 }
 
+function getSupabaseAuthStorageKey() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  if (!url) return ""
+
+  try {
+    const projectRef = new URL(url).hostname.split(".")[0]
+    return projectRef ? `sb-${projectRef}-auth-token` : ""
+  } catch {
+    return ""
+  }
+}
+
+export async function clearSupabaseLocalSession(supabase = getSupabaseClient()) {
+  if (!supabase) return
+
+  await supabase.auth.signOut({ scope: "local" }).catch(() => undefined)
+
+  if (typeof window === "undefined") return
+
+  const storageKey = getSupabaseAuthStorageKey()
+  if (storageKey) {
+    window.localStorage.removeItem(storageKey)
+    window.sessionStorage.removeItem(storageKey)
+  }
+}
+
+export function getSupabaseErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message) return error.message
+
+  if (typeof error === "object" && error !== null) {
+    const parts = ["message", "details", "hint", "code"]
+      .map((key) => {
+        const value = (error as Record<string, unknown>)[key]
+        return typeof value === "string" && value ? value : ""
+      })
+      .filter(Boolean)
+
+    if (parts.length > 0) return parts.join(" ")
+  }
+
+  if (typeof error === "string" && error) return error
+
+  return fallback
+}
+
 export function isSupabaseConfigured() {
   return Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
 }
