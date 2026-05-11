@@ -9,6 +9,7 @@ import {
   type LocalAccountData,
 } from "@/lib/local-store"
 import {
+  filterAccountCachedProjects,
   mergeProjectHistories,
   mergeSyncedProjectHistories,
   normalizeProjectItem,
@@ -51,7 +52,7 @@ function createAccountFromRemote(userId: string, remoteAccount: Awaited<ReturnTy
     membershipExpiresAt: remoteAccount?.membership_expires_at ?? null,
     membershipFreeImageQualities: remoteAccount?.membership_free_image_qualities ?? [],
     membershipTier: remoteAccount?.membership_tier ?? null,
-    projects: (remoteAccount?.projects ?? []).map(normalizeProjectItem),
+    projects: filterAccountCachedProjects(remoteAccount?.projects ?? []),
     redeemedCodes: remoteAccount?.redeemed_codes ?? [],
     role: remoteAccount?.role ?? "user",
     userId,
@@ -186,7 +187,11 @@ export function useAccountSession() {
         const remoteAccount = await loadSupabaseAccount(userId)
         if (!active) return
 
-        setAccount(createAccountFromRemote(userId, remoteAccount))
+        const cachedAccount = createAccountFromRemote(userId, remoteAccount)
+        setAccount((current) => ({
+          ...cachedAccount,
+          projects: mergeProjectHistories(cachedAccount.projects, current?.projects ?? []),
+        }))
         setAccountStatus("ready")
 
         loadServerHistoryProjects()

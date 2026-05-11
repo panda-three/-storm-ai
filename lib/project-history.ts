@@ -93,6 +93,17 @@ export function isServerBackedProjectItem(project: ProjectItem) {
   return Boolean(project.taskId && !project.id.startsWith("pending-") && !project.id.startsWith("seed-"))
 }
 
+function isTerminalProjectStatus(status: ProjectStatus) {
+  return status === "已完成" || status === "部分完成" || status === "失败"
+}
+
+export function filterAccountCachedProjects(projects: ProjectItem[]) {
+  return projects.map(normalizeProjectItem).filter((project) => {
+    if (isDeletedProjectItem(project)) return true
+    return !isServerBackedProjectItem(project)
+  })
+}
+
 function isLegacyPendingProjectItem(project: ProjectItem) {
   return project.id.startsWith("pending-") && !project.clientRequestId
 }
@@ -195,7 +206,10 @@ export function mergeProjectHistories(serverProjects: ProjectItem[], localProjec
         })
       : normalizeProjectItem({
           ...normalized,
-          status: isServerBackedProjectItem(existing) ? existing.status : normalized.status,
+          status:
+            isServerBackedProjectItem(existing) || isTerminalProjectStatus(existing.status)
+              ? existing.status
+              : normalized.status,
           id: normalized.id,
           clientRequestId: existing.clientRequestId || normalized.clientRequestId,
           palette: normalized.palette ?? existing.palette,
