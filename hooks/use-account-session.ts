@@ -1,7 +1,7 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
-import type { Session, SupabaseClient, User } from "@supabase/supabase-js"
+import { useCallback, useEffect, useState } from "react"
+import type { SupabaseClient, User } from "@supabase/supabase-js"
 import {
   createDefaultAccount,
   loadLocalAccount,
@@ -13,24 +13,35 @@ import {
   mergeProjectHistories,
   mergeSyncedProjectHistories,
   normalizeProjectItem,
-  sortProjectHistory,
   type ProjectItem,
 } from "@/lib/project-history"
 import {
-  assertCurrentAuthSession,
-  claimCurrentAuthSession,
-  clearSupabaseLocalSession,
-  getSupabaseErrorMessage,
   getSupabaseClient,
   loadSupabaseAccount,
-  releaseCurrentAuthSession,
   saveSupabaseAccount,
 } from "@/lib/supabase"
 
 export type AccountStatus = "idle" | "loading" | "ready" | "error"
 
+type AccountSessionData = LocalAccountData & {
+  mustChangePassword?: boolean
+  temporaryPasswordSetAt?: string | null
+  temporaryPasswordSetBy?: string | null
+}
+
+type RemoteAccountSessionFields = {
+  must_change_password?: boolean
+  temporary_password_set_at?: string | null
+  temporary_password_set_by?: string | null
+}
+
 export function getErrorMessage(error: unknown, fallback: string) {
-  return getSupabaseErrorMessage(error, fallback)
+  if (error instanceof Error && error.message) return error.message
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = (error as { message?: unknown }).message
+    if (typeof message === "string" && message) return message
+  }
+  return fallback
 }
 
 function isInvalidRefreshTokenError(error: unknown) {
@@ -38,25 +49,60 @@ function isInvalidRefreshTokenError(error: unknown) {
   return message.includes("Invalid Refresh Token") || message.includes("Refresh Token Not Found")
 }
 
+function isSessionInvalidError(error: unknown) {
+  const message = getErrorMessage(error, "")
+  return (
+    isInvalidRefreshTokenError(error) ||
+    message.includes("登录状态已失效") ||
+    message.includes("请先登录") ||
+    message.includes("其他设备登录") ||
+    message.includes("解除登录占用") ||
+    message.includes("重新登录")
+  )
+}
+
 async function clearLocalSupabaseSession(supabase: SupabaseClient) {
-  await clearSupabaseLocalSession(supabase)
+  try {
+    await supabase.auth.signOut({ scope: "local" })
+  } catch {
+    // Ignore cleanup failures; the next login will overwrite the local auth state.
+  }
+
+  if (typeof window === "undefined") return
+
+  const supabaseHost = process.env.NEXT_PUBLIC_SUPABASE_URL
+  if (!supabaseHost) return
+
+  try {
+    const projectRef = new URL(supabaseHost).hostname.split(".")[0]
+    if (!projectRef) return
+
+    const storageKey = `sb-${projectRef}-auth-token`
+    window.localStorage.removeItem(storageKey)
+    window.sessionStorage.removeItem(storageKey)
+  } catch {
+    // Storage cleanup is best effort only.
+  }
 }
 
 function createAccountFromRemote(userId: string, remoteAccount: Awaited<ReturnType<typeof loadSupabaseAccount>>): LocalAccountData {
-  return {
+  const remoteSessionFields = remoteAccount as (typeof remoteAccount & RemoteAccountSessionFields) | null
+  const account: AccountSessionData = {
     creditBalance: remoteAccount?.credit_balance ?? 0,
     ledger: remoteAccount?.ledger ?? [],
     membershipExpiresAt: remoteAccount?.membership_expires_at ?? null,
     membershipFreeImageQualities: remoteAccount?.membership_free_image_qualities ?? [],
     membershipTier: remoteAccount?.membership_tier ?? null,
-    mustChangePassword: remoteAccount?.must_change_password ?? false,
-    projects: sortProjectHistory(filterAccountCachedProjects(remoteAccount?.projects ?? [])),
+    mustChangePassword: remoteSessionFields?.must_change_password ?? false,
+    projects: filterAccountCachedProjects(remoteAccount?.projects ?? []),
     redeemedCodes: remoteAccount?.redeemed_codes ?? [],
     role: remoteAccount?.role ?? "user",
-    temporaryPasswordSetAt: remoteAccount?.temporary_password_set_at ?? null,
-    temporaryPasswordSetBy: remoteAccount?.temporary_password_set_by ?? null,
+    temporaryPasswordSetAt: remoteSessionFields?.temporary_password_set_at ?? null,
+    temporaryPasswordSetBy: remoteSessionFields?.temporary_password_set_by ?? null,
     userId,
   }
+
+  return account
 }
 
 async function loadServerHistoryProjects() {
@@ -91,8 +137,20 @@ export function useAccountSession() {
   const [authReady, setAuthReady] = useState(false)
   const [user, setUser] = useState<User | null>(null)
   const [syncError, setSyncError] = useState("")
-  const authSequenceRef = useRef(0)
   const userId = user?.id ?? ""
+
+  const clearSession = useCallback(async (message?: string) => {
+    const supabase = getSupabaseClient()
+    if (supabase) {
+      await clearLocalSupabaseSession(supabase)
+    }
+
+    setUser(null)
+    setAccount(createDefaultAccount())
+    setAccountStatus("idle")
+    setAuthReady(true)
+    setSyncError(message ?? "")
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -103,14 +161,48 @@ export function useAccountSession() {
       return
     }
 
-    const beginAuthUpdate = () => {
-      authSequenceRef.current += 1
-      return authSequenceRef.current
-    }
+    supabase.auth.getSession().then(async ({ data, error }) => {
+      if (!active) return
 
-    const isCurrentAuthUpdate = (sequence: number) => active && authSequenceRef.current === sequence
+      if (error) {
+        if (isSessionInvalidError(error)) {
+          await clearSession()
+          return
+        }
 
-    const setSessionUser = (session: Session | null) => {
+        setSyncError(getErrorMessage(error, "加载登录状态失败。"))
+        setUser(null)
+        setAuthReady(true)
+        return
+      }
+
+      setUser(data.session?.user ?? null)
+      setAuthReady(true)
+    }).catch(async (error) => {
+      if (!active) return
+
+      if (isSessionInvalidError(error)) {
+        await clearSession()
+        return
+      }
+
+      setSyncError(getErrorMessage(error, "加载登录状态失败。"))
+      setUser(null)
+      setAuthReady(true)
+    })
+
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "TOKEN_REFRESHED") {
+        setAuthReady(true)
+        return
+      }
+
+      if (event === "SIGNED_OUT") {
+        setUser(null)
+        setAuthReady(true)
+        return
+      }
+
       setUser((current) => {
         const nextUser = session?.user ?? null
 
@@ -121,133 +213,13 @@ export function useAccountSession() {
         return nextUser
       })
       setAuthReady(true)
-    }
-
-    const handleSession = async (session: Session | null, sequence: number, action: "claim" | "assert") => {
-      if (!session) {
-        if (!isCurrentAuthUpdate(sequence)) return
-        setUser(null)
-        setAuthReady(true)
-        return
-      }
-
-      try {
-        if (action === "claim") {
-          await claimCurrentAuthSession()
-        } else {
-          await assertCurrentAuthSession()
-        }
-      } catch (error) {
-        if (!isCurrentAuthUpdate(sequence)) return
-
-        await clearLocalSupabaseSession(supabase)
-        if (!isCurrentAuthUpdate(sequence)) return
-
-        setSyncError(getErrorMessage(error, action === "claim" ? "登录设备校验失败，请重新登录。" : "登录设备已失效，请重新登录。"))
-        setUser(null)
-        setAuthReady(true)
-        return
-      }
-
-      if (!isCurrentAuthUpdate(sequence)) return
-      setSyncError("")
-      setSessionUser(session)
-    }
-
-    const initialSequence = beginAuthUpdate()
-    supabase.auth.getSession().then(async ({ data, error }) => {
-      if (!isCurrentAuthUpdate(initialSequence)) return
-
-      if (error) {
-        if (isInvalidRefreshTokenError(error)) {
-          await clearLocalSupabaseSession(supabase)
-          if (!isCurrentAuthUpdate(initialSequence)) return
-
-          setUser(null)
-          setAuthReady(true)
-          return
-        }
-
-        setSyncError(getErrorMessage(error, "加载登录状态失败。"))
-        setUser(null)
-        setAuthReady(true)
-        return
-      }
-
-      await handleSession(data.session ?? null, initialSequence, "claim")
-    }).catch(async (error) => {
-      if (!isCurrentAuthUpdate(initialSequence)) return
-
-      if (isInvalidRefreshTokenError(error)) {
-        await clearLocalSupabaseSession(supabase)
-        if (!isCurrentAuthUpdate(initialSequence)) return
-
-        setUser(null)
-        setAuthReady(true)
-        return
-      }
-
-      setSyncError(getErrorMessage(error, "加载登录状态失败。"))
-      setUser(null)
-      setAuthReady(true)
-    })
-
-    const { data } = supabase.auth.onAuthStateChange((event, session) => {
-      const sequence = beginAuthUpdate()
-
-      if (event === "TOKEN_REFRESHED") {
-        void handleSession(session, sequence, "assert")
-        return
-      }
-
-      if (event === "SIGNED_OUT") {
-        setUser(null)
-        setAuthReady(true)
-        return
-      }
-
-      if (event === "SIGNED_IN" && session) {
-        void handleSession(session, sequence, "claim")
-        return
-      }
-
-      setSessionUser(session)
     })
 
     return () => {
       active = false
       data.subscription.unsubscribe()
     }
-  }, [])
-
-  useEffect(() => {
-    if (!userId) return
-
-    let active = true
-    const supabase = getSupabaseClient()
-    if (!supabase) return
-
-    const validateActiveSession = () => {
-      assertCurrentAuthSession().catch(async (error) => {
-        if (!active) return
-
-        await clearLocalSupabaseSession(supabase)
-        if (!active) return
-
-        setSyncError(getErrorMessage(error, "登录设备已失效，请重新登录。"))
-        setUser(null)
-        setAccount(createDefaultAccount())
-        setAccountStatus("idle")
-      })
-    }
-
-    window.addEventListener("focus", validateActiveSession)
-
-    return () => {
-      active = false
-      window.removeEventListener("focus", validateActiveSession)
-    }
-  }, [userId])
+  }, [clearSession])
 
   useEffect(() => {
     let active = true
@@ -266,11 +238,21 @@ export function useAccountSession() {
         const remoteAccount = await loadSupabaseAccount(userId)
         if (!active) return
 
-        const serverProjects = await loadServerHistoryProjects().catch((error) => {
-          if (!active) return []
-          setSyncError(getErrorMessage(error, "读取生成历史失败。"))
-          return []
-        })
+        let serverProjects: ProjectItem[] = []
+        let historyError = ""
+        try {
+          serverProjects = await loadServerHistoryProjects()
+        } catch (error) {
+          if (!active) return
+
+          const message = getErrorMessage(error, "读取生成历史失败。")
+          if (isSessionInvalidError(error)) {
+            clearSession(message)
+            return
+          }
+
+          historyError = message
+        }
         if (!active) return
 
         const cachedAccount = createAccountFromRemote(userId, remoteAccount)
@@ -282,11 +264,18 @@ export function useAccountSession() {
           }
         })
         setAccountStatus("ready")
+        if (historyError) setSyncError(historyError)
       } catch (error) {
         if (!active) return
+        const message = getErrorMessage(error, "加载 Supabase 数据失败。")
+        if (isSessionInvalidError(error)) {
+          clearSession(message)
+          return
+        }
+
         setAccount(null)
         setAccountStatus("error")
-        setSyncError(getErrorMessage(error, "加载 Supabase 数据失败。"))
+        setSyncError(message)
       }
     }
 
@@ -295,7 +284,7 @@ export function useAccountSession() {
     return () => {
       active = false
     }
-  }, [userId])
+  }, [clearSession, userId])
 
   useEffect(() => {
     if (!userId || !account || accountStatus !== "ready" || account.userId !== userId) return
@@ -321,10 +310,21 @@ export function useAccountSession() {
       setSyncError("")
       const remoteAccount = await loadSupabaseAccount(userId)
       const refreshedAccount = createAccountFromRemote(userId, remoteAccount)
-      const serverProjects = await loadServerHistoryProjects().catch((error) => {
-        setSyncError(getErrorMessage(error, "读取生成历史失败。"))
-        return []
-      })
+
+      let serverProjects: ProjectItem[] = []
+      let historyError = ""
+      try {
+        serverProjects = await loadServerHistoryProjects()
+      } catch (error) {
+        const message = getErrorMessage(error, "读取生成历史失败。")
+        if (isSessionInvalidError(error)) {
+          clearSession(message)
+          return
+        }
+
+        historyError = message
+      }
+
       setAccount((current) => {
         const cachedProjects = mergeProjectHistories(refreshedAccount.projects, current?.projects ?? [])
         return {
@@ -333,21 +333,25 @@ export function useAccountSession() {
         }
       })
       setAccountStatus("ready")
+      if (historyError) setSyncError(historyError)
     } catch (error) {
+      const message = getErrorMessage(error, "刷新 Supabase 数据失败。")
+      if (isSessionInvalidError(error)) {
+        clearSession(message)
+        return
+      }
+
       setAccount((current) => {
         if (!current) setAccountStatus("error")
         return current
       })
-      setSyncError(getErrorMessage(error, "刷新 Supabase 数据失败。"))
+      setSyncError(message)
     }
-  }, [userId])
+  }, [clearSession, userId])
 
   const signOut = useCallback(async () => {
     const supabase = getSupabaseClient()
     if (supabase) {
-      await releaseCurrentAuthSession().catch((error) => {
-        setSyncError(getErrorMessage(error, "释放登录设备失败。"))
-      })
       const { error } = await supabase.auth.signOut()
       if (error && isInvalidRefreshTokenError(error)) {
         await clearLocalSupabaseSession(supabase)
